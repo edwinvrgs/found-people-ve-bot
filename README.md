@@ -2,11 +2,11 @@
 
 Bot de Telegram para ayudar a consultar personas encontradas/localizadas tras la tragedia de los terremotos ocurridos el 24 de junio de 2026 en Venezuela.
 
-El bot muestra resultados obtenidos de fuentes públicas y listados OCR revisables. Cada resultado incluye un enlace a la fuente para que familiares, voluntarios y colaboradores puedan verificar la información.
+El bot muestra resultados obtenidos de fuentes públicas, reportes ciudadanos y transcripciones de listas manuscritas de pacientes atendidos en centros médicos tras el terremoto. Cada resultado incluye un enlace a la fuente para que familiares, voluntarios y colaboradores puedan verificar la información.
 
 Bot público: https://t.me/encontrados_ve_bot
 
-Fuente OCR principal: https://github.com/ecrespo/OCR-data_Terremoto_Venezuela_24062026
+Fuente principal de transcripciones médicas: https://github.com/ecrespo/OCR-data_Terremoto_Venezuela_24062026
 
 
 Bot de Telegram para consultar personas encontradas/localizadas en Venezuela.
