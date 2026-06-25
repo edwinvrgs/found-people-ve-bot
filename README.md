@@ -145,6 +145,40 @@ curl -X POST "$PUBLIC_BASE_URL/api/ingest" \
   }'
 ```
 
+## Analytics / PostHog
+
+El bot puede enviar eventos server-side a PostHog si `POSTHOG_API_KEY` está configurado.
+
+Variables:
+
+```env
+POSTHOG_API_KEY=
+POSTHOG_HOST=https://us.i.posthog.com
+ANALYTICS_HASH_SALT=
+```
+
+Notas de privacidad:
+
+- No se envían nombres de personas, búsquedas, ubicaciones, notas, usernames, URLs, tokens ni IDs raw.
+- IDs de Telegram/IP se hashean con `ANALYTICS_HASH_SALT` o `TELEGRAM_WEBHOOK_SECRET`.
+- Si `POSTHOG_API_KEY` existe, producción debe tener `ANALYTICS_HASH_SALT` o `TELEGRAM_WEBHOOK_SECRET` configurado.
+
+Eventos principales:
+
+- `message_received`: mensaje de Telegram recibido.
+- `telegram_command`: comando usado (`start`, `help`, `search`, `list`, `report`, etc.).
+- `search_performed`: búsqueda ejecutada, con bucket de longitud y conteo de resultados; no incluye query.
+- `list_viewed`: lista vista, página y conteo.
+- `pending_action_step`: pasos de flujos conversacionales.
+- `citizen_report_created`: reporte ciudadano enviado desde Telegram.
+- `feedback_submitted`: feedback recibido, solo bucket de longitud.
+- `callback_clicked`: botones del bot usados.
+- `rate_limited`: usuario/API alcanzó rate limit.
+- `external_api_list_requested`: consumo del endpoint externo de lista.
+- `external_report_created`: reporte creado vía API externa.
+
+``/health`` devuelve `analytics: "configured" | "disabled"` para verificar si PostHog está activo.
+
 ## Uso en Telegram
 
 - `/start` muestra opciones.

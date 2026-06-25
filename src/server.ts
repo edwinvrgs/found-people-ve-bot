@@ -2,6 +2,7 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { z } from "zod";
 import { deletePersonById, deletePersonBySourceUrl, ensureSchema, getFoundPeopleStats, getPersonById, incrementMetric, listPeople, listRecentCitizenReports, searchPeople, updatePersonStatus, upsertPeople, type FoundPerson, type RecordStatus } from "./db.js";
+import { analyticsEnabled, capture, captureSystem, hashIdentifier, shutdownAnalytics } from "./analytics.js";
 import { rateLimit, sweepRateLimitBuckets } from "./rate-limit.js";
 
 const MAX_JSON_BODY_BYTES = 256 * 1024;
@@ -110,7 +111,7 @@ const server = createServer(async (request, response) => {
     const clientKey = clientIp(request);
 
     if (request.method === "GET" && url.pathname === "/health") {
-      return json(response, 200, { ok: true });
+      return json(response, 200, { ok: true, analytics: analyticsEnabled() ? "configured" : "disabled" });
     }
 
     if (request.method === "GET" && url.pathname === "/api/people") {
@@ -140,6 +141,12 @@ const server = createServer(async (request, response) => {
 
       const result = await listPeople(parsed.data.page, parsed.data.pageSize);
       await incrementMetric("external_api_list");
+      captureSystem("external_api_list_requested", {
+        page: parsed.data.page,
+        pageSize: parsed.data.pageSize,
+        total: result.total,
+        clientId: hashIdentifier(clientKey),
+      });
       return json(response, 200, {
         data: result.items,
         pagination: {
@@ -168,6 +175,14 @@ const server = createServer(async (request, response) => {
 
       const report = await createExternalReport(parsed.data, request.headers["idempotency-key"]);
       await incrementMetric("external_api_report");
+      captureSystem("external_report_created", {
+        hasSourceUrl: Boolean(parsed.data.sourceUrl),
+        hasNotes: Boolean(parsed.data.notes),
+        hasReporter: Boolean(parsed.data.reporter),
+        hasReporterService: Boolean(parsed.data.reporter?.service),
+        idempotencyKeyPresent: typeof request.headers["idempotency-key"] === "string",
+        clientId: hashIdentifier(clientKey),
+      });
       await notifyAdmin(`🆕 <b>Reporte externo insertado</b>
 
 ${formatAdminPerson(report)}`, adminActionButtons(report.id));
@@ -317,6 +332,37 @@ function publicBaseUrl() {
   return (env.publicBaseUrl ?? `http://localhost:${env.port}`).replace(/\/$/, "");
 }
 
+function telegramDistinctId(chatId: number, userId?: number) {
+  return hashIdentifier(userId ?? chatId) ?? "telegram_unknown";
+}
+
+function telegramEvent(event: string, chatId: number) {
+  return event;
+}
+
+function captureTelegramCommand(message: NonNullable<TelegramUpdate["message"]>, command: string, properties: Record<string, string | number | boolean | null | undefined> = {}) {
+  capture("telegram_command", telegramDistinctId(message.chat.id, message.from?.id), {
+    command,
+    chatId: hashIdentifier(message.chat.id),
+    userId: hashIdentifier(message.from?.id),
+    ...properties,
+  });
+}
+
+function commandName(text: string) {
+  const match = text.match(/^\/([a-zA-Z_]+)/);
+  return match?.[1]?.toLowerCase() ?? null;
+}
+
+function lengthBucket(length: number) {
+  if (length <= 0) return "empty";
+  if (length <= 10) return "1-10";
+  if (length <= 30) return "11-30";
+  if (length <= 80) return "31-80";
+  if (length <= 200) return "81-200";
+  return "201+";
+}
+
 async function handleTelegramUpdate(update: TelegramUpdate) {
   if (update.callback_query) return handleCallback(update.callback_query);
 
@@ -325,16 +371,32 @@ async function handleTelegramUpdate(update: TelegramUpdate) {
 
   const limited = rateLimit(`chat:${message.chat.id}`, TELEGRAM_CHAT_LIMIT.count, TELEGRAM_CHAT_LIMIT.windowMs);
   if (!limited.allowed) {
+    capture(telegramEvent("rate_limited", message.chat.id), telegramDistinctId(message.chat.id, message.from?.id), { surface: "telegram_message", retryAfterSeconds: limited.retryAfterSeconds });
     return sendMessage(message.chat.id, `Demasiadas consultas seguidas. Intenta de nuevo en ${limited.retryAfterSeconds}s.`);
   }
 
   const text = message.text.trim();
+  capture(telegramEvent("message_received", message.chat.id), telegramDistinctId(message.chat.id, message.from?.id), {
+    chatType: "direct_or_group",
+    isCommand: text.startsWith("/"),
+    command: text.startsWith("/") ? commandName(text) : null,
+    textLengthBucket: lengthBucket(text.length),
+  });
   const pending = getPendingChatAction(message.chat.id);
   if (pending && !text.startsWith("/")) return handlePendingChatAction(message, text, pending);
 
-  if (text === "/start" || text === "/help") return sendMenu(message.chat.id);
-  if (text === "/cancel") return cancelPendingAction(message.chat.id);
-  if (text.startsWith("/source")) return handleSourceCommand(message, text);
+  if (text === "/start" || text === "/help") {
+    captureTelegramCommand(message, text === "/start" ? "start" : "help");
+    return sendMenu(message.chat.id);
+  }
+  if (text === "/cancel") {
+    captureTelegramCommand(message, "cancel");
+    return cancelPendingAction(message.chat.id);
+  }
+  if (text.startsWith("/source")) {
+    captureTelegramCommand(message, "source");
+    return handleSourceCommand(message, text);
+  }
 
   if (text.startsWith("/admin")) {
     return handleAdminCommand(message, text);
@@ -342,24 +404,28 @@ async function handleTelegramUpdate(update: TelegramUpdate) {
 
   if (text === "/list" || text === "/lista") {
     await incrementMetric("telegram_list");
+    captureTelegramCommand(message, "list");
     return sendPeoplePage(message.chat.id, 1);
   }
 
   if (text.startsWith("/feedback") || text.startsWith("/suggest")) {
+    captureTelegramCommand(message, "feedback");
     return handleFeedbackCommand(message, text);
   }
 
   if (text.startsWith("/report")) {
+    captureTelegramCommand(message, "report");
     return handleReportCommand(message, text);
   }
 
   if (text.startsWith("/search") || text.startsWith("/buscar")) {
     const query = text.replace(/^\/(?:search|buscar)\s*/i, "").trim();
+    captureTelegramCommand(message, "search", { hasQuery: Boolean(query) });
     if (!query) return askForSearch(message.chat.id);
-    return sendSearchResults(message.chat.id, query);
+    return sendSearchResults(message.chat.id, query, message);
   }
 
-  return sendSearchResults(message.chat.id, text);
+  return sendSearchResults(message.chat.id, text, message);
 }
 
 function getPendingChatAction(chatId: number) {
@@ -384,6 +450,8 @@ function cancelPendingAction(chatId: number) {
 async function handlePendingChatAction(message: NonNullable<TelegramUpdate["message"]>, text: string, pending: PendingChatAction) {
   if (text.toLowerCase() === "cancelar" || text.toLowerCase() === "/cancel") return cancelPendingAction(message.chat.id);
 
+  capture(telegramEvent("pending_action_step", message.chat.id), telegramDistinctId(message.chat.id, message.from?.id), { kind: pending.kind, textLengthBucket: lengthBucket(text.length) });
+
   if (pending.kind === "feedback") {
     pendingChatActions.delete(message.chat.id);
     return submitFeedback(message, text.trim());
@@ -405,8 +473,12 @@ function resolvePersonId(value: string) {
 }
 
 async function handleAdminCommand(message: NonNullable<TelegramUpdate["message"]>, text: string) {
-  if (!isAdminChat(message.chat.id)) return sendMessage(message.chat.id, "No autorizado.");
+  if (!isAdminChat(message.chat.id)) {
+    captureTelegramCommand(message, "admin_unauthorized", { attemptedCommand: commandName(text) });
+    return sendMessage(message.chat.id, "No autorizado.");
+  }
   await incrementMetric("telegram_admin_command");
+  captureTelegramCommand(message, commandName(text) ?? "admin");
 
   if (text === "/admin" || text === "/admin_help") return sendMessage(message.chat.id, adminHelpText());
 
@@ -486,7 +558,10 @@ async function handleCallback(callback: NonNullable<TelegramUpdate["callback_que
 
   const chatId = callback.message.chat.id;
   const limited = rateLimit(`chat:${chatId}`, TELEGRAM_CHAT_LIMIT.count, TELEGRAM_CHAT_LIMIT.windowMs);
-  if (!limited.allowed) return answerCallback(callback.id, `Intenta de nuevo en ${limited.retryAfterSeconds}s.`);
+  if (!limited.allowed) {
+    capture(telegramEvent("rate_limited", chatId), telegramDistinctId(chatId), { surface: "telegram_callback", retryAfterSeconds: limited.retryAfterSeconds });
+    return answerCallback(callback.id, `Intenta de nuevo en ${limited.retryAfterSeconds}s.`);
+  }
 
   const messageId = callback.message.message_id;
   const data = callback.data ?? "";
@@ -513,6 +588,7 @@ ${formatAdminPerson(rows[0])}`) : undefined;
 
   const listMatch = data.match(/^list:(\d+)$/);
   if (listMatch) {
+    capture(telegramEvent("callback_clicked", chatId), telegramDistinctId(chatId), { action: "list_page", page: Number(listMatch[1]) });
     await answerCallback(callback.id);
     return sendPeoplePage(chatId, Number(listMatch[1]), messageId);
   }
@@ -577,6 +653,7 @@ async function submitFeedback(message: NonNullable<TelegramUpdate["message"]>, f
     return sendMessage(message.chat.id, "El mensaje está muy corto. Escríbeme un poco más de detalle, por favor.");
   }
 
+  capture(telegramEvent("feedback_submitted", message.chat.id), telegramDistinctId(message.chat.id, message.from?.id), { textLengthBucket: lengthBucket(feedback.length) });
   await notifyAdmin(`💬 <b>Feedback recibido</b>
 
 ${formatReporter(message)}
@@ -659,6 +736,11 @@ async function submitReport(message: NonNullable<TelegramUpdate["message"]>, dra
     raw: { provider: "telegram_report", location, submittedSourceUrl: draft.sourceUrl ?? null, reporter: reporterRaw(message), messageId: message.message_id, chatId: message.chat.id },
   }]);
   await incrementMetric("telegram_report");
+  capture(telegramEvent("citizen_report_created", message.chat.id), telegramDistinctId(message.chat.id, message.from?.id), {
+    hasSourceUrl: Boolean(draft.sourceUrl),
+    sourceKind: draft.sourceUrl ? "user_url" : "fallback",
+    locationLengthBucket: lengthBucket(location.length),
+  });
 
   await notifyAdmin(`🆕 <b>Reporte ciudadano insertado</b>
 
@@ -671,17 +753,23 @@ ${formatAdminPerson(person)}`, adminActionButtons(person.id));
 
 async function sendPeoplePage(chatId: number, page: number, messageId?: number) {
   const result = await listPeople(page, 5);
+  capture(telegramEvent("list_viewed", chatId), telegramDistinctId(chatId), { page, total: result.total, resultCount: result.items.length });
   const text = formatPeopleList(result.items, `Personas encontradas (${result.page}/${result.totalPages})`, result.total);
   const buttons = paginationButtons("list", result.page, result.totalPages);
   return messageId ? editMessage(chatId, messageId, text, buttons) : sendMessage(chatId, text, buttons);
 }
 
-async function sendSearchResults(chatId: number, query: string) {
+async function sendSearchResults(chatId: number, query: string, message?: NonNullable<TelegramUpdate["message"]>) {
   const parsed = SearchQuerySchema.shape.name.safeParse(query);
   if (!parsed.success) return sendMessage(chatId, "Escribe al menos 2 caracteres y máximo 80 para buscar.");
 
   await incrementMetric("telegram_search");
   const result = await searchPeople(parsed.data, 1, 5);
+  capture(telegramEvent("search_performed", chatId), telegramDistinctId(chatId, message?.from?.id), {
+    queryLengthBucket: lengthBucket(parsed.data.length),
+    resultCount: result.items.length,
+    total: result.total,
+  });
   const text = result.total === 0
     ? `No encontré resultados para “${escapeHtml(parsed.data)}”.\n\nPrueba con menos palabras o revisa la lista completa.`
     : formatPeopleList(result.items, `Resultados para “${parsed.data}”`, result.total);
@@ -858,6 +946,14 @@ async function telegram(method: string, body: Record<string, unknown>) {
 
 class RequestBodyTooLargeError extends Error {}
 class InvalidJsonError extends Error {}
+
+process.once("SIGTERM", () => {
+  void shutdownAnalytics().finally(() => process.exit(0));
+});
+
+process.once("SIGINT", () => {
+  void shutdownAnalytics().finally(() => process.exit(0));
+});
 
 async function readJson(request: IncomingMessage, maxBytes: number) {
   const chunks: Buffer[] = [];
