@@ -64,6 +64,7 @@ type TelegramUpdate = {
   };
   callback_query?: {
     id: string;
+    from?: TelegramUser;
     data?: string;
     message?: {
       chat: { id: number };
@@ -258,6 +259,12 @@ const TelegramUpdateSchema = z.object({
   }).optional(),
   callback_query: z.object({
     id: z.string().max(120),
+    from: z.object({
+      id: z.number(),
+      username: z.string().max(64).optional(),
+      first_name: z.string().max(128).optional(),
+      last_name: z.string().max(128).optional(),
+    }).optional(),
     data: z.string().max(64).optional(),
     message: z.object({
       chat: z.object({ id: z.number() }),
@@ -333,8 +340,15 @@ function publicBaseUrl() {
   return (env.publicBaseUrl ?? `http://localhost:${env.port}`).replace(/\/$/, "");
 }
 
-function telegramDistinctId(chatId: number, userId?: number) {
-  return hashIdentifier(userId ?? chatId) ?? "telegram_unknown";
+function normalizeTelegramUsername(username: string | null | undefined) {
+  const normalized = username?.trim().replace(/^@/, "");
+  return normalized ? `@${normalized.toLowerCase()}` : null;
+}
+
+function telegramDistinctId(chatId: number, user?: TelegramUser) {
+  const username = normalizeTelegramUsername(user?.username);
+  if (username) return `telegram:${username}`;
+  return hashIdentifier(user?.id ?? chatId) ?? "telegram_unknown";
 }
 
 function telegramEvent(event: string, chatId: number) {
@@ -344,14 +358,16 @@ function telegramEvent(event: string, chatId: number) {
 function identifyTelegramUser(message: NonNullable<TelegramUpdate["message"]>) {
   const username = message.from?.username?.trim();
   if (!username) return;
-  identify(telegramDistinctId(message.chat.id, message.from?.id), {
-    telegramUsername: username,
+  const normalizedUsername = normalizeTelegramUsername(username);
+  if (!normalizedUsername) return;
+  identify(telegramDistinctId(message.chat.id, message.from), {
+    telegramUsername: normalizedUsername,
     telegramHasUsername: true,
   });
 }
 
 function captureTelegramCommand(message: NonNullable<TelegramUpdate["message"]>, command: string, properties: Record<string, string | number | boolean | null | undefined> = {}) {
-  capture("telegram_command", telegramDistinctId(message.chat.id, message.from?.id), {
+  capture("telegram_command", telegramDistinctId(message.chat.id, message.from), {
     command,
     chatId: hashIdentifier(message.chat.id),
     userId: hashIdentifier(message.from?.id),
@@ -389,13 +405,13 @@ async function handleTelegramUpdate(update: TelegramUpdate) {
 
   const limited = rateLimit(`chat:${message.chat.id}`, TELEGRAM_CHAT_LIMIT.count, TELEGRAM_CHAT_LIMIT.windowMs);
   if (!limited.allowed) {
-    capture(telegramEvent("rate_limited", message.chat.id), telegramDistinctId(message.chat.id, message.from?.id), { surface: "telegram_message", retryAfterSeconds: limited.retryAfterSeconds });
+    capture(telegramEvent("rate_limited", message.chat.id), telegramDistinctId(message.chat.id, message.from), { surface: "telegram_message", retryAfterSeconds: limited.retryAfterSeconds });
     return sendMessage(message.chat.id, `Demasiadas consultas seguidas. Intenta de nuevo en ${limited.retryAfterSeconds}s.`);
   }
 
   const text = message.text.trim();
   identifyTelegramUser(message);
-  capture(telegramEvent("message_received", message.chat.id), telegramDistinctId(message.chat.id, message.from?.id), {
+  capture(telegramEvent("message_received", message.chat.id), telegramDistinctId(message.chat.id, message.from), {
     chatType: "direct_or_group",
     isCommand: text.startsWith("/"),
     command: text.startsWith("/") ? commandName(text) : null,
@@ -427,7 +443,7 @@ async function handleTelegramUpdate(update: TelegramUpdate) {
     pendingChatActions.delete(message.chat.id);
     await incrementMetric("telegram_list");
     captureTelegramCommand(message, "lista");
-    return sendPeoplePage(message.chat.id, 1);
+    return sendPeoplePage(message.chat.id, 1, undefined, message.from);
   }
 
   if (isCommand(text, "sugerencia")) {
@@ -477,7 +493,7 @@ function cancelPendingAction(chatId: number) {
 async function handlePendingChatAction(message: NonNullable<TelegramUpdate["message"]>, text: string, pending: PendingChatAction) {
   if (text.toLowerCase() === "cancelar" || isCommand(text, "cancelar")) return cancelPendingAction(message.chat.id);
 
-  capture(telegramEvent("pending_action_step", message.chat.id), telegramDistinctId(message.chat.id, message.from?.id), { kind: pending.kind, textLengthBucket: lengthBucket(text.length) });
+  capture(telegramEvent("pending_action_step", message.chat.id), telegramDistinctId(message.chat.id, message.from), { kind: pending.kind, textLengthBucket: lengthBucket(text.length) });
 
   if (pending.kind === "search") {
     pendingChatActions.delete(message.chat.id);
@@ -591,7 +607,7 @@ async function handleCallback(callback: NonNullable<TelegramUpdate["callback_que
   const chatId = callback.message.chat.id;
   const limited = rateLimit(`chat:${chatId}`, TELEGRAM_CHAT_LIMIT.count, TELEGRAM_CHAT_LIMIT.windowMs);
   if (!limited.allowed) {
-    capture(telegramEvent("rate_limited", chatId), telegramDistinctId(chatId), { surface: "telegram_callback", retryAfterSeconds: limited.retryAfterSeconds });
+    capture(telegramEvent("rate_limited", chatId), telegramDistinctId(chatId, callback.from), { surface: "telegram_callback", retryAfterSeconds: limited.retryAfterSeconds });
     return answerCallback(callback.id, `Intenta de nuevo en ${limited.retryAfterSeconds}s.`);
   }
 
@@ -621,9 +637,9 @@ ${formatAdminPerson(rows[0])}`) : undefined;
 
   const listMatch = data.match(/^list:(\d+)$/);
   if (listMatch) {
-    capture(telegramEvent("callback_clicked", chatId), telegramDistinctId(chatId), { action: "list_page", page: Number(listMatch[1]) });
+    capture(telegramEvent("callback_clicked", chatId), telegramDistinctId(chatId, callback.from), { action: "list_page", page: Number(listMatch[1]) });
     await answerCallback(callback.id);
-    return sendPeoplePage(chatId, Number(listMatch[1]), messageId);
+    return sendPeoplePage(chatId, Number(listMatch[1]), messageId, callback.from);
   }
 
   return answerCallback(callback.id);
@@ -704,7 +720,7 @@ async function submitFeedback(message: NonNullable<TelegramUpdate["message"]>, f
     return sendMessage(message.chat.id, "El mensaje está muy corto. Escríbeme un poco más de detalle, por favor.");
   }
 
-  capture(telegramEvent("feedback_submitted", message.chat.id), telegramDistinctId(message.chat.id, message.from?.id), { textLengthBucket: lengthBucket(feedback.length) });
+  capture(telegramEvent("feedback_submitted", message.chat.id), telegramDistinctId(message.chat.id, message.from), { textLengthBucket: lengthBucket(feedback.length) });
   await notifyAdmin(`💬 <b>Feedback recibido</b>
 
 ${formatReporter(message)}
@@ -787,7 +803,7 @@ async function submitReport(message: NonNullable<TelegramUpdate["message"]>, dra
     raw: { provider: "telegram_report", location, submittedSourceUrl: draft.sourceUrl ?? null, reporter: reporterRaw(message), messageId: message.message_id, chatId: message.chat.id },
   }]);
   await incrementMetric("telegram_report");
-  capture(telegramEvent("citizen_report_created", message.chat.id), telegramDistinctId(message.chat.id, message.from?.id), {
+  capture(telegramEvent("citizen_report_created", message.chat.id), telegramDistinctId(message.chat.id, message.from), {
     hasSourceUrl: Boolean(draft.sourceUrl),
     sourceKind: draft.sourceUrl ? "user_url" : "fallback",
     locationLengthBucket: lengthBucket(location.length),
@@ -802,9 +818,9 @@ ${formatAdminPerson(person)}`, adminActionButtons(person.id));
   return sendMessage(message.chat.id, `Gracias. Agregué el reporte de <b>${escapeHtml(fullName)}</b> a la lista.\n\nSi luego detectas un error, puedes escribir /sugerencia.`);
 }
 
-async function sendPeoplePage(chatId: number, page: number, messageId?: number) {
+async function sendPeoplePage(chatId: number, page: number, messageId?: number, user?: TelegramUser) {
   const result = await listPeople(page, 5);
-  capture(telegramEvent("list_viewed", chatId), telegramDistinctId(chatId), { page, total: result.total, resultCount: result.items.length });
+  capture(telegramEvent("list_viewed", chatId), telegramDistinctId(chatId, user), { page, total: result.total, resultCount: result.items.length });
   const text = formatPeopleList(result.items, `Personas encontradas (${result.page}/${result.totalPages})`, result.total);
   const buttons = paginationButtons("list", result.page, result.totalPages);
   return messageId ? editMessage(chatId, messageId, text, buttons) : sendMessage(chatId, text, buttons);
@@ -816,7 +832,7 @@ async function sendSearchResults(chatId: number, query: string, message?: NonNul
 
   await incrementMetric("telegram_search");
   const result = await searchPeople(parsed.data, 1, 5);
-  capture(telegramEvent("search_performed", chatId), telegramDistinctId(chatId, message?.from?.id), {
+  capture(telegramEvent("search_performed", chatId), telegramDistinctId(chatId, message?.from), {
     queryLengthBucket: lengthBucket(parsed.data.length),
     resultCount: result.items.length,
     total: result.total,

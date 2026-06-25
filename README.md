@@ -160,8 +160,9 @@ ANALYTICS_HASH_SALT=
 Notas de privacidad:
 
 - No se envían nombres de personas buscadas, búsquedas, ubicaciones, notas, URLs, tokens ni IDs raw.
-- IDs de Telegram/IP se hashean con `ANALYTICS_HASH_SALT` o `TELEGRAM_WEBHOOK_SECRET`.
-- Si Telegram provee `username`, se usa como propiedad de identificación `telegramUsername` en PostHog para seguimiento operacional.
+- Si Telegram provee `username`, se usa como `distinctId` legible (`telegram:@usuario`) y como propiedad `telegramUsername` en PostHog.
+- Si Telegram no provee `username`, el ID de Telegram se hashea con `ANALYTICS_HASH_SALT` o `TELEGRAM_WEBHOOK_SECRET`.
+- IPs/clientes externos se registran solo como hash cuando aplica.
 - Si `POSTHOG_API_KEY` existe, producción debe tener `ANALYTICS_HASH_SALT` o `TELEGRAM_WEBHOOK_SECRET` configurado.
 
 Taxonomía oficial de eventos:
@@ -185,7 +186,7 @@ Eventos de API externa:
 
 Identificación:
 
-- `identify`: cuando Telegram provee `username`, se asocia `telegramUsername` al usuario hasheado en PostHog. No es un evento de actividad.
+- `identify`: cuando Telegram provee `username`, se asocia `telegramUsername` y el `distinctId` visible queda como `telegram:@usuario`. No es un evento de actividad.
 
 Eventos fuera de taxonomía:
 
