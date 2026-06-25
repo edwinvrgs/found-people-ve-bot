@@ -11,6 +11,7 @@ GET /health
 GET /api/search?name=Maria&page=1&pageSize=5
 GET /api/people?page=1&pageSize=5
 POST /api/ingest
+DELETE /api/people
 POST /telegram/webhook
 ```
 
@@ -57,4 +58,13 @@ curl -X POST "$PUBLIC_BASE_URL/api/ingest" \
 curl "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/setWebhook" \
   -d "url=$PUBLIC_BASE_URL/telegram/webhook" \
   -d "secret_token=$TELEGRAM_WEBHOOK_SECRET"
+```
+
+## Borrado manual protegido
+
+```bash
+curl -X DELETE "$PUBLIC_BASE_URL/api/people" \
+  -H "Authorization: Bearer $INGEST_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{"fuente_url":"https://example.com/fuente"}'
 ```

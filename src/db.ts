@@ -104,6 +104,16 @@ export async function upsertPeople(people: Array<{
   return rows;
 }
 
+export async function deletePersonBySourceUrl(fuenteUrl: string) {
+  const result = await pool.query<FoundPerson>(
+    `DELETE FROM found_people
+     WHERE fuente_url = $1
+     RETURNING id, nombre_completo, informacion_relevante, fuente_url`,
+    [fuenteUrl],
+  );
+  return result.rows;
+}
+
 function pageResult(items: FoundPerson[], page: number, pageSize: number, total: number) {
   return {
     items,

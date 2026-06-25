@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { z } from "zod";
-import { ensureSchema, listPeople, requiredEnv, searchPeople, upsertPeople, type FoundPerson } from "./db.js";
+import { deletePersonBySourceUrl, ensureSchema, listPeople, searchPeople, upsertPeople, type FoundPerson } from "./db.js";
 
 const PeopleQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
@@ -11,14 +11,20 @@ const SearchQuerySchema = PeopleQuerySchema.extend({
   name: z.string().trim().min(2).max(120),
 });
 
+const PersonPayloadSchema = z.object({
+  nombre_completo: z.string().trim().min(2).max(200),
+  informacion_relevante: z.string().trim().max(5000).nullable().optional(),
+  fuente_url: z.string().url(),
+  hash_fuente: z.string().trim().min(16).max(128).optional(),
+  raw: z.record(z.string(), z.unknown()).optional(),
+});
+
 const IngestSchema = z.object({
-  people: z.array(z.object({
-    nombre_completo: z.string().trim().min(2).max(200),
-    informacion_relevante: z.string().trim().max(5000).nullable().optional(),
-    fuente_url: z.string().url(),
-    hash_fuente: z.string().trim().min(16).max(128).optional(),
-    raw: z.record(z.string(), z.unknown()).optional(),
-  })).min(1).max(200),
+  people: z.array(PersonPayloadSchema).min(1).max(200),
+});
+
+const DeletePersonSchema = z.object({
+  fuente_url: z.string().url(),
 });
 
 type TelegramUpdate = {
@@ -78,6 +84,17 @@ const server = createServer(async (request, response) => {
 
       const rows = await upsertPeople(parsed.data.people);
       return json(response, 200, { upserted: rows.length, people: rows });
+    }
+
+    if (request.method === "DELETE" && url.pathname === "/api/people") {
+      const authError = validateBearer(request.headers.authorization, env.ingestSecret);
+      if (authError) return json(response, authError.status, { error: authError.message });
+
+      const parsed = DeletePersonSchema.safeParse(await readJson(request));
+      if (!parsed.success) return json(response, 400, { error: "Invalid delete payload", details: parsed.error.flatten() });
+
+      const rows = await deletePersonBySourceUrl(parsed.data.fuente_url);
+      return json(response, 200, { deleted: rows.length, people: rows });
     }
 
     if (request.method === "POST" && url.pathname === "/telegram/webhook") {
