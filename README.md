@@ -1,4 +1,11 @@
-# found-people-ve-bot
+# Personas Encontradas VE Bot
+
+Bot de Telegram para ayudar a consultar personas encontradas/localizadas tras la tragedia de los terremotos ocurridos el 24 de junio de 2026 en Venezuela.
+
+El bot muestra resultados obtenidos de fuentes públicas y listados OCR revisables. Cada resultado incluye un enlace a la fuente para que familiares, voluntarios y colaboradores puedan verificar la información.
+
+Bot público: https://t.me/encontrados_ve_bot
+
 
 Bot de Telegram para consultar personas encontradas/localizadas en Venezuela.
 

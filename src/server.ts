@@ -183,10 +183,10 @@ async function handleTelegramUpdate(update: TelegramUpdate) {
 
   const text = message.text.trim();
   if (text === "/start" || text === "/help") return sendMenu(message.chat.id);
-  if (text === "/lista") return sendPeoplePage(message.chat.id, 1);
+  if (text === "/list" || text === "/lista") return sendPeoplePage(message.chat.id, 1);
 
-  if (text.startsWith("/buscar")) {
-    const query = text.replace(/^\/buscar\s*/i, "").trim();
+  if (text.startsWith("/search") || text.startsWith("/buscar")) {
+    const query = text.replace(/^\/(?:search|buscar)\s*/i, "").trim();
     if (!query) return askForSearch(message.chat.id);
     return sendSearchResults(message.chat.id, query);
   }
@@ -228,7 +228,7 @@ async function sendMenu(chatId: number) {
 }
 
 function menuText() {
-  return "Hola. Puedo ayudarte a consultar personas encontradas/localizadas.\n\nPuedes buscar por nombre o ver la lista completa paginada.";
+  return "🇻🇪 Personas Encontradas VE\n\nHerramienta de apoyo para consultar personas encontradas/localizadas tras la tragedia de los terremotos ocurridos el 24 de junio de 2026 en Venezuela.\n\nLos resultados se obtienen de fuentes públicas y listados OCR revisables. Cada resultado incluye un enlace a la fuente para verificación.\n\nComandos:\n/list — ver lista paginada\n/search nombre — buscar por nombre\n\nTambién funcionan /lista y /buscar.";
 }
 
 function menuButtons(): InlineButton[][] {
@@ -239,7 +239,7 @@ function menuButtons(): InlineButton[][] {
 }
 
 async function askForSearch(chatId: number) {
-  return sendMessage(chatId, "Escribe el nombre o nombre y apellido.\n\nEjemplo: /buscar Maria Perez", [[button("📋 Ver lista", "list:1")]]);
+  return sendMessage(chatId, "Escribe el nombre o nombre y apellido.\n\nEjemplo: /search Maria Perez", [[button("📋 Ver lista", "list:1")]]);
 }
 
 async function sendPeoplePage(chatId: number, page: number, messageId?: number) {
