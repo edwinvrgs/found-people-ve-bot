@@ -39,7 +39,7 @@ type InlineButton =
 const env = {
   port: Number(process.env.PORT ?? 3000),
   supabaseUrl: requiredEnv("SUPABASE_URL"),
-  supabaseKey: requiredEnv("SUPABASE_SERVICE_ROLE_KEY"),
+  supabaseKey: requiredEnv("SUPABASE_ANON_KEY"),
   telegramToken: process.env.TELEGRAM_BOT_TOKEN,
   telegramWebhookSecret: process.env.TELEGRAM_WEBHOOK_SECRET,
 };
@@ -115,31 +115,28 @@ function validateTelegramSecret(header: string | string[] | undefined) {
 }
 
 async function listPeople(page: number, pageSize: number) {
-  const from = (page - 1) * pageSize;
-  const to = from + pageSize - 1;
-  const { data, error, count } = await supabase
-    .from("personas_encontradas")
-    .select("nombre_completo,informacion_relevante,fuente_url", { count: "exact" })
-    .order("nombre_completo", { ascending: true })
-    .range(from, to);
-
-  if (error) throw new Error(error.message);
-  return pageResult(data ?? [], page, pageSize, count ?? 0);
+  const people = await fetchPublicPeople();
+  return pageResult(people, page, pageSize, people.length);
 }
 
 async function searchPeople(name: string, page: number, pageSize: number) {
-  const from = (page - 1) * pageSize;
-  const to = from + pageSize - 1;
-  const safeName = escapeLike(name);
-  const { data, error, count } = await supabase
-    .from("personas_encontradas")
-    .select("nombre_completo,informacion_relevante,fuente_url", { count: "exact" })
-    .ilike("nombre_completo", `%${safeName}%`)
-    .order("nombre_completo", { ascending: true })
-    .range(from, to);
+  const normalizedName = normalize(name);
+  const people = (await fetchPublicPeople())
+    .filter((person) => normalize(person.nombre_completo).includes(normalizedName));
+  return pageResult(people, page, pageSize, people.length);
+}
 
+async function fetchPublicPeople() {
+  const { data, error } = await supabase.rpc("personas_encontradas_publicas");
   if (error) throw new Error(error.message);
-  return pageResult(data ?? [], page, pageSize, count ?? 0);
+  return ((data ?? []) as FoundPerson[]).sort((a, b) => {
+    const byName = a.nombre_completo.localeCompare(b.nombre_completo, "es", { sensitivity: "base" });
+    return byName || a.fuente_url.localeCompare(b.fuente_url);
+  });
+}
+
+function normalize(value: string) {
+  return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
 }
 
 function pageResult(items: FoundPerson[], page: number, pageSize: number, total: number) {

@@ -2,7 +2,7 @@
 
 Bot de Telegram para consultar personas encontradas/localizadas en Venezuela.
 
-Consulta la tabla `personas_encontradas` en Supabase y expone endpoints separados para:
+Consulta la RPC pública `personas_encontradas_publicas()` en Supabase y expone endpoints separados para:
 
 - búsqueda por nombre
 - lista paginada en orden alfabético
@@ -22,7 +22,7 @@ POST /telegram/webhook
 ```env
 PORT=3000
 SUPABASE_URL=
-SUPABASE_SERVICE_ROLE_KEY=
+SUPABASE_ANON_KEY=
 TELEGRAM_BOT_TOKEN=
 TELEGRAM_WEBHOOK_SECRET=
 PUBLIC_BASE_URL=
