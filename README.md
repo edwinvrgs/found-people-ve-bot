@@ -64,6 +64,16 @@ curl -X POST "$PUBLIC_BASE_URL/api/ingest" \
 - `/report Nombre Apellido | Ubicación | enlace opcional` inserta un reporte ciudadano directamente en la base del bot y notifica al administrador.
 - Cualquier texto libre se interpreta como búsqueda por nombre.
 
+
+## Comandos admin
+
+Estos comandos solo funcionan desde `TELEGRAM_ADMIN_CHAT_ID`:
+
+- `/admin_stats` muestra total de registros y reportes ciudadanos.
+- `/admin_recent [n]` muestra los últimos reportes ciudadanos, máximo 10.
+- `/admin_delete id-o-url` borra un registro por ID o por URL de fuente.
+- `/admin_help` muestra la ayuda admin.
+
 ## Configurar webhook
 
 ```bash

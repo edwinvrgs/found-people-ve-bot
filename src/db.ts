@@ -9,6 +9,12 @@ export type FoundPerson = {
   sourceUrl: string;
 };
 
+export type FoundPersonWithMetadata = FoundPerson & {
+  createdAt: string;
+  updatedAt: string;
+  provider: string | null;
+};
+
 export const pool = new Pool({
   connectionString: requiredEnv("DATABASE_URL"),
   max: Number(process.env.PG_POOL_MAX ?? 5),
@@ -189,6 +195,50 @@ export async function deletePersonBySourceUrl(sourceUrl: string) {
                relevant_info AS "relevantInfo",
                source_url AS "sourceUrl"`,
     [sourceUrl],
+  );
+  return result.rows;
+}
+
+export async function deletePersonById(id: string) {
+  const result = await pool.query<FoundPerson>(
+    `DELETE FROM found_people
+     WHERE id = $1
+     RETURNING id,
+               full_name AS "fullName",
+               relevant_info AS "relevantInfo",
+               source_url AS "sourceUrl"`,
+    [id],
+  );
+  return result.rows;
+}
+
+export async function getFoundPeopleStats() {
+  const result = await pool.query<{ total: string; citizen_reports: string }>(
+    `SELECT
+       count(*) AS total,
+       count(*) FILTER (WHERE raw->>'provider' = 'telegram_report') AS citizen_reports
+     FROM found_people`,
+  );
+  return {
+    total: Number(result.rows[0]?.total ?? 0),
+    citizenReports: Number(result.rows[0]?.citizen_reports ?? 0),
+  };
+}
+
+export async function listRecentCitizenReports(limit: number) {
+  const result = await pool.query<FoundPersonWithMetadata>(
+    `SELECT id,
+            full_name AS "fullName",
+            relevant_info AS "relevantInfo",
+            source_url AS "sourceUrl",
+            created_at AS "createdAt",
+            updated_at AS "updatedAt",
+            raw->>'provider' AS provider
+     FROM found_people
+     WHERE raw->>'provider' = 'telegram_report'
+     ORDER BY updated_at DESC
+     LIMIT $1`,
+    [limit],
   );
   return result.rows;
 }

@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { z } from "zod";
-import { deletePersonBySourceUrl, ensureSchema, listPeople, searchPeople, upsertPeople, type FoundPerson } from "./db.js";
+import { deletePersonById, deletePersonBySourceUrl, ensureSchema, getFoundPeopleStats, listPeople, listRecentCitizenReports, searchPeople, upsertPeople, type FoundPerson } from "./db.js";
 import { rateLimit, sweepRateLimitBuckets } from "./rate-limit.js";
 
 const MAX_JSON_BODY_BYTES = 256 * 1024;
@@ -200,6 +200,11 @@ async function handleTelegramUpdate(update: TelegramUpdate) {
 
   const text = message.text.trim();
   if (text === "/start" || text === "/help") return sendMenu(message.chat.id);
+
+  if (text.startsWith("/admin")) {
+    return handleAdminCommand(message, text);
+  }
+
   if (text === "/list" || text === "/lista") return sendPeoplePage(message.chat.id, 1);
 
   if (text.startsWith("/feedback") || text.startsWith("/suggest")) {
@@ -217,6 +222,43 @@ async function handleTelegramUpdate(update: TelegramUpdate) {
   }
 
   return sendSearchResults(message.chat.id, text);
+}
+
+async function handleAdminCommand(message: NonNullable<TelegramUpdate["message"]>, text: string) {
+  if (!isAdminChat(message.chat.id)) return sendMessage(message.chat.id, "No autorizado.");
+
+  if (text === "/admin" || text === "/admin_help") return sendMessage(message.chat.id, adminHelpText());
+
+  if (text === "/admin_stats") {
+    const stats = await getFoundPeopleStats();
+    return sendMessage(message.chat.id, `📊 <b>Estadísticas</b>\n\nTotal en base: ${stats.total}\nReportes ciudadanos: ${stats.citizenReports}`);
+  }
+
+  if (text.startsWith("/admin_recent")) {
+    const limit = Math.min(Number(text.replace(/^\/admin_recent\s*/i, "").trim()) || 5, 10);
+    const reports = await listRecentCitizenReports(limit);
+    if (reports.length === 0) return sendMessage(message.chat.id, "No hay reportes ciudadanos recientes.");
+    return sendMessage(message.chat.id, formatAdminPeopleList(reports, `Últimos reportes ciudadanos (${reports.length})`));
+  }
+
+  if (text.startsWith("/admin_delete")) {
+    const target = text.replace(/^\/admin_delete\s*/i, "").trim();
+    if (!target) return sendMessage(message.chat.id, "Uso: /admin_delete id-o-url");
+
+    const rows = isHttpUrl(target) ? await deletePersonBySourceUrl(target) : await deletePersonById(target);
+    if (rows.length === 0) return sendMessage(message.chat.id, "No encontré ese registro para borrar.");
+    return sendMessage(message.chat.id, `🗑️ Registro borrado:\n\n${formatAdminPerson(rows[0])}`);
+  }
+
+  return sendMessage(message.chat.id, adminHelpText());
+}
+
+function isAdminChat(chatId: number) {
+  return env.adminChatId !== null && chatId === env.adminChatId;
+}
+
+function adminHelpText() {
+  return "🔐 <b>Comandos admin</b>\n\n/admin_stats — ver total y reportes ciudadanos\n/admin_recent [n] — ver últimos reportes ciudadanos\n/admin_delete id-o-url — borrar un registro por ID o fuente\n/admin_help — ver esta ayuda";
 }
 
 async function handleCallback(callback: NonNullable<TelegramUpdate["callback_query"]>) {
@@ -368,6 +410,20 @@ async function notifyAdmin(text: string) {
   await sendMessage(env.adminChatId, text);
 }
 
+function formatAdminPeopleList(items: FoundPerson[], title: string) {
+  const lines = items.map(formatAdminPerson);
+  return truncate(`${escapeHtml(title)}\n\n${lines.join("\n\n")}`, 3500);
+}
+
+function formatAdminPerson(person: FoundPerson) {
+  return [
+    `<b>${escapeHtml(person.fullName)}</b>`,
+    `ID: <code>${escapeHtml(person.id)}</code>`,
+    person.relevantInfo ? escapeHtml(truncate(person.relevantInfo, 180)) : null,
+    `<a href="${escapeHtmlAttribute(person.sourceUrl)}">Ver fuente</a>`,
+  ].filter(Boolean).join("\n");
+}
+
 function formatPeopleList(items: FoundPerson[], title: string, total: number) {
   if (items.length === 0) return `${escapeHtml(title)}\n\nNo hay personas para mostrar.`;
 
@@ -400,6 +456,15 @@ function escapeHtml(value: string) {
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;");
+}
+
+function isHttpUrl(value: string) {
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
 }
 
 function escapeHtmlAttribute(value: string) {
