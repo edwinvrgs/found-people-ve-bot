@@ -164,19 +164,33 @@ Notas de privacidad:
 - Si Telegram provee `username`, se usa como propiedad de identificación `telegramUsername` en PostHog para seguimiento operacional.
 - Si `POSTHOG_API_KEY` existe, producción debe tener `ANALYTICS_HASH_SALT` o `TELEGRAM_WEBHOOK_SECRET` configurado.
 
-Eventos principales:
+Taxonomía oficial de eventos:
 
-- `message_received`: mensaje de Telegram recibido.
-- `telegram_command`: comando usado (`inicio`, `ayuda`, `buscar`, `lista`, `reportar`, etc.; admin mantiene nombres en inglés).
-- `search_performed`: búsqueda ejecutada, con bucket de longitud y conteo de resultados; no incluye query.
-- `list_viewed`: lista vista, página y conteo.
-- `pending_action_step`: pasos de flujos conversacionales.
-- `citizen_report_created`: reporte ciudadano enviado desde Telegram.
-- `feedback_submitted`: feedback recibido, solo bucket de longitud.
-- `callback_clicked`: botones del bot usados.
-- `rate_limited`: usuario/API alcanzó rate limit.
-- `external_api_list_requested`: consumo del endpoint externo de lista.
-- `external_report_created`: reporte creado vía API externa.
+Eventos de Telegram:
+
+- `message_received`: mensaje recibido por el bot. No incluye el texto.
+- `telegram_command`: comando usado (`ayuda`, `buscar`, `lista`, `reportar`, etc.; admin mantiene nombres en inglés).
+- `search_performed`: búsqueda ejecutada; incluye bucket de longitud y conteo de resultados, no la búsqueda.
+- `list_viewed`: lista vista; incluye página y conteos.
+- `pending_action_step`: paso de flujo conversacional (`search`, `feedback`, `report_*`), sin contenido del mensaje.
+- `citizen_report_created`: reporte ciudadano creado desde Telegram; solo flags/buckets, sin nombre, ubicación ni fuente.
+- `feedback_submitted`: feedback enviado; solo bucket de longitud, no el contenido.
+- `callback_clicked`: botón/callback usado; por ahora navegación de lista.
+- `rate_limited`: rate limit aplicado en mensaje o callback.
+
+Eventos de API externa:
+
+- `external_api_list_requested`: consumo de `GET /api/v1/found-people`; incluye paginación/conteos y client ID hasheado.
+- `external_report_created`: reporte creado vía `POST /api/v1/found-people/reports`; solo flags y client ID hasheado.
+
+Identificación:
+
+- `identify`: cuando Telegram provee `username`, se asocia `telegramUsername` al usuario hasheado en PostHog. No es un evento de actividad.
+
+Eventos fuera de taxonomía:
+
+- `openclaw_debug_event` y `openclaw_direct_capture_test` fueron pruebas manuales únicas de conectividad y no forman parte del bot.
+- No debe existir ningún evento `openclaw_*` en la instrumentación de producción.
 
 ``/health`` devuelve `analytics: "configured" | "disabled"` para verificar si PostHog está activo.
 
