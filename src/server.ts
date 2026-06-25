@@ -253,7 +253,7 @@ async function sendMenu(chatId: number) {
 }
 
 function menuText() {
-  return "🇻🇪 Personas Encontradas VE\n\nHerramienta de apoyo para consultar personas encontradas/localizadas tras la tragedia de los terremotos ocurridos el 24 de junio de 2026 en Venezuela.\n\nLos resultados se obtienen de fuentes públicas, reportes ciudadanos y transcripciones de listas manuscritas de pacientes atendidos en centros médicos. Cada resultado incluye un enlace a la fuente cuando está disponible para verificación.\n\nComandos:\n/list — ver lista paginada\n/search nombre — buscar por nombre\n\nTambién funcionan /lista y /buscar.";
+  return "🇻🇪 Personas Encontradas VE\n\nHerramienta de apoyo para consultar personas encontradas/localizadas tras la tragedia de los terremotos ocurridos el 24 de junio de 2026 en Venezuela.\n\nLos resultados se obtienen de fuentes públicas, reportes ciudadanos y transcripciones de listas manuscritas de pacientes atendidos en centros médicos. Cada resultado incluye un enlace a la fuente cuando está disponible para verificación.\n\nComandos:\n/list — ver lista paginada\n/search nombre — buscar por nombre\n/report Nombre Apellido | Ubicación | enlace opcional — reportar persona encontrada\n/feedback mensaje — enviar sugerencia\n\nTambién funcionan /lista y /buscar.";
 }
 
 function menuButtons(): InlineButton[][] {
