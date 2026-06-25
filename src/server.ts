@@ -361,7 +361,7 @@ function isAdminChat(chatId: number) {
 }
 
 function adminHelpText() {
-  return "🔐 <b>Comandos admin</b>\n\n/admin_stats — ver total y reportes ciudadanos\n/admin_recent [n] — ver últimos reportes ciudadanos\n/admin_delete id-o-url — borrar un registro por ID o fuente\n/admin_help — ver esta ayuda";
+  return "🔐 <b>Comandos admin</b>\n\n/admin_stats — métricas y totales\n/admin_recent [n] [status] — últimos reportes ciudadanos\n/admin_digest — resumen rápido\n/admin_verify id — marcar verificado\n/admin_review id — marcar por revisar\n/admin_hide id — ocultar sin borrar\n/admin_delete id-o-url — borrar definitivo\n/admin_help — ver esta ayuda";
 }
 
 async function handleCallback(callback: NonNullable<TelegramUpdate["callback_query"]>) {
@@ -408,13 +408,12 @@ async function sendMenu(chatId: number) {
 }
 
 function menuText() {
-  return "🇻🇪 Personas Encontradas VE\n\nHerramienta de apoyo para consultar personas encontradas/localizadas tras la tragedia de los terremotos ocurridos el 24 de junio de 2026 en Venezuela.\n\nLos resultados se obtienen de fuentes públicas, reportes ciudadanos y transcripciones de listas manuscritas de pacientes atendidos en centros médicos. Cada resultado incluye un enlace a la fuente cuando está disponible para verificación.\n\nComandos:\n/list — ver lista paginada\n/search nombre — buscar por nombre\n/report Nombre Apellido | Ubicación | enlace opcional — reportar persona encontrada\n/feedback mensaje — enviar sugerencia\n\nTambién funcionan /lista y /buscar.";
+  return "🇻🇪 <b>Personas Encontradas VE</b>\n\nBusca personas encontradas/localizadas tras los terremotos del 24 de junio de 2026 en Venezuela.\n\nComandos principales:\n/search nombre — buscar por nombre\n/list — ver lista\n/report — reportar una persona encontrada\n/source — fuentes y limitaciones\n\nTambién puedes escribir un nombre directamente.";
 }
 
 function menuButtons(): InlineButton[][] {
   return [
-    [button("🔎 Buscar por nombre", "search")],
-    [button("📋 Ver lista", "list:1")],
+    [button("🔎 Buscar", "search"), button("📋 Lista", "list:1")],
   ];
 }
 
@@ -570,9 +569,7 @@ async function sendSearchResults(chatId: number, query: string) {
     ? `No encontré resultados para “${escapeHtml(parsed.data)}”.\n\nPrueba con menos palabras o revisa la lista completa.`
     : formatPeopleList(result.items, `Resultados para “${parsed.data}”`, result.total);
 
-  return sendMessage(chatId, text, [
-    [button("🔎 Buscar otro nombre", "search"), button("📋 Ver lista", "list:1")],
-  ]);
+  return sendMessage(chatId, text, [[button("🔎 Buscar", "search"), button("📋 Lista", "list:1")]]);
 }
 
 function normalizeOptionalSourceUrl(value: string | undefined) {
@@ -656,9 +653,9 @@ function formatPeopleList(items: FoundPerson[], title: string, total: number) {
   if (items.length === 0) return `${escapeHtml(title)}\n\nNo hay personas para mostrar.`;
 
   const lines = items.map((person, index) => [
-    `${index + 1}. <b>${escapeHtml(person.fullName)}</b> ${statusEmoji(person.status)}`,
-    person.relevantInfo ? escapeHtml(truncate(person.relevantInfo, 240)) : null,
-    `<a href="${escapeHtmlAttribute(person.sourceUrl)}">Ver fuente</a>`,
+    `${index + 1}. <b>${escapeHtml(person.fullName)}</b>`,
+    person.relevantInfo ? escapeHtml(truncate(person.relevantInfo, 220)) : null,
+    `<a href="${escapeHtmlAttribute(person.sourceUrl)}">Fuente</a>`,
   ].filter(Boolean).join("\n"));
 
   return truncate(`${escapeHtml(title)}\nTotal: ${total}\n\n${lines.join("\n\n")}`, 3500);
@@ -666,9 +663,9 @@ function formatPeopleList(items: FoundPerson[], title: string, total: number) {
 
 function paginationButtons(prefix: string, page: number, totalPages: number): InlineButton[][] {
   const row: InlineButton[] = [];
-  if (page > 1) row.push(button("⬅️ Anterior", `${prefix}:${page - 1}`));
-  if (page < totalPages) row.push(button("Siguiente ➡️", `${prefix}:${page + 1}`));
-  return row.length ? [row, [button("🔎 Buscar", "search")]] : [[button("🔎 Buscar", "search")]];
+  if (page > 1) row.push(button("⬅️", `${prefix}:${page - 1}`));
+  if (page < totalPages) row.push(button("➡️", `${prefix}:${page + 1}`));
+  return row.length ? [row] : [];
 }
 
 function button(text: string, callbackData: string): InlineButton {
