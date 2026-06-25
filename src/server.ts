@@ -394,18 +394,18 @@ async function handleTelegramUpdate(update: TelegramUpdate) {
   const pending = getPendingChatAction(message.chat.id);
   if (pending && !text.startsWith("/")) return handlePendingChatAction(message, text, pending);
 
-  if (isCommand(text, "start") || isCommand(text, "help")) {
+  if (isCommand(text, "start") || isCommand(text, "inicio") || isCommand(text, "ayuda")) {
     pendingChatActions.delete(message.chat.id);
-    captureTelegramCommand(message, isCommand(text, "start") ? "start" : "help");
+    captureTelegramCommand(message, isCommand(text, "inicio") ? "inicio" : isCommand(text, "ayuda") ? "ayuda" : "start");
     return sendMenu(message.chat.id);
   }
-  if (isCommand(text, "cancel")) {
-    captureTelegramCommand(message, "cancel");
+  if (isCommand(text, "cancelar")) {
+    captureTelegramCommand(message, "cancelar");
     return cancelPendingAction(message.chat.id);
   }
-  if (isCommand(text, "source")) {
+  if (isCommand(text, "fuentes")) {
     pendingChatActions.delete(message.chat.id);
-    captureTelegramCommand(message, "source");
+    captureTelegramCommand(message, "fuentes");
     return handleSourceCommand(message, text);
   }
 
@@ -413,29 +413,29 @@ async function handleTelegramUpdate(update: TelegramUpdate) {
     return handleAdminCommand(message, text);
   }
 
-  if (isCommand(text, "list") || isCommand(text, "lista")) {
+  if (isCommand(text, "lista")) {
     pendingChatActions.delete(message.chat.id);
     await incrementMetric("telegram_list");
-    captureTelegramCommand(message, "list");
+    captureTelegramCommand(message, "lista");
     return sendPeoplePage(message.chat.id, 1);
   }
 
-  if (isCommand(text, "feedback") || isCommand(text, "suggest")) {
+  if (isCommand(text, "sugerencia")) {
     pendingChatActions.delete(message.chat.id);
-    captureTelegramCommand(message, "feedback");
+    captureTelegramCommand(message, "sugerencia");
     return handleFeedbackCommand(message, text);
   }
 
-  if (isCommand(text, "report")) {
+  if (isCommand(text, "reportar")) {
     pendingChatActions.delete(message.chat.id);
-    captureTelegramCommand(message, "report");
+    captureTelegramCommand(message, "reportar");
     return handleReportCommand(message, text);
   }
 
-  if (isCommand(text, "search") || isCommand(text, "buscar")) {
+  if (isCommand(text, "buscar")) {
     pendingChatActions.delete(message.chat.id);
     const query = commandPayload(text);
-    captureTelegramCommand(message, "search", { hasQuery: Boolean(query) });
+    captureTelegramCommand(message, "buscar", { hasQuery: Boolean(query) });
     if (!query) return askForSearch(message.chat.id);
     return sendSearchResults(message.chat.id, query, message);
   }
@@ -463,7 +463,7 @@ function cancelPendingAction(chatId: number) {
 }
 
 async function handlePendingChatAction(message: NonNullable<TelegramUpdate["message"]>, text: string, pending: PendingChatAction) {
-  if (text.toLowerCase() === "cancelar" || text.toLowerCase() === "/cancel") return cancelPendingAction(message.chat.id);
+  if (text.toLowerCase() === "cancelar" || isCommand(text, "cancelar")) return cancelPendingAction(message.chat.id);
 
   capture(telegramEvent("pending_action_step", message.chat.id), telegramDistinctId(message.chat.id, message.from?.id), { kind: pending.kind, textLengthBucket: lengthBucket(text.length) });
 
@@ -622,7 +622,7 @@ async function sendMenu(chatId: number) {
 }
 
 function menuText() {
-  return "🇻🇪 <b>Personas Encontradas VE</b>\n\nBusca personas encontradas/localizadas tras los terremotos del 24 de junio de 2026 en Venezuela.\n\nComandos principales:\n/search nombre — buscar por nombre\n/list — ver lista\n/report — reportar una persona encontrada\n/source — fuentes y limitaciones\n\nTambién puedes escribir un nombre directamente.";
+  return "🇻🇪 <b>Personas Encontradas VE</b>\n\nBusca personas encontradas/localizadas tras los terremotos del 24 de junio de 2026 en Venezuela.\n\nComandos principales:\n/buscar nombre — buscar por nombre\n/lista — ver lista\n/reportar — reportar una persona encontrada\n/fuentes — fuentes y limitaciones\n/sugerencia — enviar comentarios\n/cancelar — cancelar una operación\n\nTambién puedes escribir un nombre directamente.";
 }
 
 function menuButtons(): InlineButton[][] {
@@ -638,7 +638,7 @@ async function askForSearch(chatId: number) {
 
 async function handleSourceCommand(message: NonNullable<TelegramUpdate["message"]>, text: string) {
   await incrementMetric("telegram_source");
-  const id = text.replace(/^\/source\s*/i, "").trim();
+  const id = commandPayload(text);
   if (!id) return sendMessage(message.chat.id, sourceText());
 
   const person = await getPersonById(resolvePersonId(id));
@@ -657,7 +657,7 @@ Los datos vienen de fuentes públicas, reportes ciudadanos y transcripciones de 
 
 Cada resultado muestra un enlace cuando está disponible. Los reportes ciudadanos ayudan en la emergencia, pero no reemplazan confirmación familiar, canales oficiales o la fuente original.
 
-Si ves un error, escribe /feedback para reportarlo.`;
+Si ves un error, escribe /sugerencia para reportarlo.`;
 }
 
 async function handleFeedbackCommand(message: NonNullable<TelegramUpdate["message"]>, text: string) {
@@ -689,7 +689,7 @@ async function handleReportCommand(message: NonNullable<TelegramUpdate["message"
   const payload = commandPayload(text);
   if (payload) return submitReport(message, parseReportPayload(payload));
   setPendingChatAction(message.chat.id, { kind: "report_name", draft: {} });
-  return sendMessage(message.chat.id, "Vamos a agregar un reporte ciudadano.\n\n¿Cuál es el <b>nombre y apellido</b> de la persona encontrada?\n\nPuedes escribir /cancel para cancelar.");
+  return sendMessage(message.chat.id, "Vamos a agregar un reporte ciudadano.\n\n¿Cuál es el <b>nombre y apellido</b> de la persona encontrada?\n\nPuedes escribir /cancelar para cancelar.");
 }
 
 async function handleReportStep(message: NonNullable<TelegramUpdate["message"]>, text: string, pending: PendingChatAction) {
@@ -770,7 +770,7 @@ ${formatReporter(message)}
 
 ${formatAdminPerson(person)}`, adminActionButtons(person.id));
 
-  return sendMessage(message.chat.id, `Gracias. Agregué el reporte de <b>${escapeHtml(fullName)}</b> a la lista.\n\nSi luego detectas un error, puedes escribir /feedback.`);
+  return sendMessage(message.chat.id, `Gracias. Agregué el reporte de <b>${escapeHtml(fullName)}</b> a la lista.\n\nSi luego detectas un error, puedes escribir /sugerencia.`);
 }
 
 async function sendPeoplePage(chatId: number, page: number, messageId?: number) {

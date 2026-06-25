@@ -166,7 +166,7 @@ Notas de privacidad:
 Eventos principales:
 
 - `message_received`: mensaje de Telegram recibido.
-- `telegram_command`: comando usado (`start`, `help`, `search`, `list`, `report`, etc.).
+- `telegram_command`: comando usado (`inicio`, `ayuda`, `buscar`, `lista`, `reportar`, etc.; admin mantiene nombres en inglés).
 - `search_performed`: búsqueda ejecutada, con bucket de longitud y conteo de resultados; no incluye query.
 - `list_viewed`: lista vista, página y conteo.
 - `pending_action_step`: pasos de flujos conversacionales.
@@ -181,13 +181,14 @@ Eventos principales:
 
 ## Uso en Telegram
 
-- `/start` muestra opciones.
-- `/list` muestra la lista paginada. `/lista` también funciona.
-- `/search Nombre Apellido` busca por nombre. `/buscar` también funciona.
-- `/feedback` inicia un flujo para enviar sugerencias al administrador. También acepta `/feedback mensaje`.
-- `/report` inicia un flujo guiado para reportar una persona encontrada. También acepta `/report Nombre Apellido | Ubicación | enlace opcional`.
-- `/source` explica de dónde salen los datos y sus limitaciones.
-- `/cancel` cancela una operación pendiente.
+- `/inicio` muestra opciones.
+- `/ayuda` muestra opciones y comandos principales.
+- `/buscar Nombre Apellido` busca por nombre.
+- `/lista` muestra la lista paginada.
+- `/reportar` inicia un flujo guiado para reportar una persona encontrada. También acepta `/reportar Nombre Apellido | Ubicación | enlace opcional`.
+- `/fuentes` explica de dónde salen los datos y sus limitaciones.
+- `/sugerencia` inicia un flujo para enviar comentarios al administrador. También acepta `/sugerencia mensaje`.
+- `/cancelar` cancela una operación pendiente.
 - Cualquier texto libre se interpreta como búsqueda por nombre.
 
 
