@@ -156,13 +156,18 @@ Manual ingestion remains available through `POST /api/ingest` with `INGEST_SECRE
 ```bash
 npm ci
 npm run db:validate
-npm run typecheck
-npm test
-npm run build
+npm run verify
 npm run security:audit
 ```
 
-Run locally:
+Run locally with a `.env` file:
+
+```bash
+cp .env.example .env
+npm run dev:env
+```
+
+Or export variables yourself and use watch mode:
 
 ```bash
 DATABASE_URL='postgresql://user:pass@localhost:5432/found_people' \
