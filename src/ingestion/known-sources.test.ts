@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
-import { scrapeApiSource, searchKnownFoundPersonSources, shouldStopApiPagination } from "./known-sources.js";
+import { parseVenezuelaTeBuscaPage, scrapeApiSource, searchKnownFoundPersonSources, shouldStopApiPagination } from "./known-sources.js";
 
 const originalFetch = globalThis.fetch;
 
@@ -35,12 +35,99 @@ describe("Known found-person source ingestion", () => {
   });
 });
 
+describe("VenezuelaTeBusca page parsing", () => {
+  it("uses a unique source URL per person instead of one shared page URL", () => {
+    const html = `
+      <html><body>
+        Registrar persona
+        Localizada Ana Maria Perez 24 años femenino 25 jun. 2026 hospital central
+        Localizada Carlos Jose Rivas 41 años masculino 25 jun. 2026 refugio municipal
+        Cargar más
+      </body></html>`;
+
+    const result = parseVenezuelaTeBuscaPage(html, 7);
+
+    assert.equal(result.candidates.length, 2);
+    assert.equal(new Set(result.candidates.map((candidate) => candidate.sourceUrl)).size, 2);
+    assert.equal(result.candidates.every((candidate) => candidate.sourceUrl.startsWith("https://venezuelatebusca.com/?status=found&page=7#record=")), true);
+    assert.equal(result.candidates.every((candidate) => /^[a-f0-9]{64}$/.test(candidate.sourceHash)), true);
+  });
+});
+
 describe("Known found-person API pagination", () => {
   it("stops pagination on auth/rate-limit statuses", () => {
     assert.equal(shouldStopApiPagination(401), true);
     assert.equal(shouldStopApiPagination(403), true);
     assert.equal(shouldStopApiPagination(429), true);
     assert.equal(shouldStopApiPagination(500), false);
+  });
+
+  it("queries Encuentralos with its public estado and offset pagination", async () => {
+    const requestedUrls: string[] = [];
+
+    globalThis.fetch = (async (input: Parameters<typeof fetch>[0]) => {
+      requestedUrls.push(String(input));
+      return new Response(JSON.stringify({
+        items: [{
+          id: "413c9ded-6def-4bd0-95bd-41bf92d65549",
+          nombre: "Anneliese Mayorca",
+          edad: 63,
+          ultima_ubicacion: "Caracas Hatillo",
+          estado: "encontrado",
+          pv_por: "venezuelatebusca.com",
+          pv_salud: "Localizada",
+          cedula: "V-12.345.678",
+          creado: "2026-06-26T19:33:06.759Z",
+        }],
+        total: 1,
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    const result = await scrapeApiSource(
+      "encuentralos",
+      "https://encuentralos.tecnosoft.dev/api/personas",
+      "https://encuentralos.tecnosoft.dev/",
+      true,
+    );
+
+    assert.equal(requestedUrls.length, 1);
+    const url = new URL(requestedUrls[0]);
+    assert.equal(url.searchParams.get("estado"), "encontrado");
+    assert.equal(url.searchParams.get("limit"), "100");
+    assert.equal(url.searchParams.get("offset"), "0");
+    assert.equal(url.searchParams.has("page"), false);
+    assert.equal(result.candidates.length, 1);
+    assert.equal(result.candidates[0].sourceUrl, "https://encuentralos.tecnosoft.dev/p/413c9ded-6def-4bd0-95bd-41bf92d65549");
+    assert.equal(result.candidates[0].documentId, "12345678");
+  });
+
+  it("does not add the slow-source page delay to Encuentralos offset pagination", async () => {
+    const requestedUrls: string[] = [];
+    const startedAt = Date.now();
+
+    globalThis.fetch = (async (input: Parameters<typeof fetch>[0]) => {
+      requestedUrls.push(String(input));
+      const offset = Number(new URL(String(input)).searchParams.get("offset"));
+      const itemCount = offset === 0 ? 100 : 1;
+      return new Response(JSON.stringify({
+        items: Array.from({ length: itemCount }, (_, index) => ({
+          id: `person-${offset}-${index}`,
+          nombre: "Persona Encontrada",
+          estado: "encontrado",
+        })),
+        total: 101,
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    await scrapeApiSource(
+      "encuentralos",
+      "https://encuentralos.tecnosoft.dev/api/personas",
+      "https://encuentralos.tecnosoft.dev/",
+      true,
+    );
+
+    assert.equal(requestedUrls.length, 2);
+    assert.equal(Date.now() - startedAt < 200, true);
   });
 
   it("does not burn every page when an API source requires reCAPTCHA", async () => {

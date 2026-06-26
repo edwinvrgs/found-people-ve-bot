@@ -23,6 +23,23 @@ model FoundPerson {
   @@map("found_people")
 }
 
+model FoundPeopleMergeAudit {
+  id               String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  canonicalId      String   @map("canonical_id") @db.Uuid
+  duplicateId      String   @map("duplicate_id") @db.Uuid
+  reason           String
+  confidence       String
+  beforeCanonical  Json     @map("before_canonical")
+  beforeDuplicate  Json     @map("before_duplicate")
+  plannedCanonical Json     @map("planned_canonical")
+  appliedBy        String   @map("applied_by")
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([canonicalId], map: "idx_found_people_merge_audit_canonical_id")
+  @@index([duplicateId], map: "idx_found_people_merge_audit_duplicate_id")
+  @@map("found_people_merge_audit")
+}
+
 model BotMetric {
   name      String   @id
   value     BigInt   @default(0)

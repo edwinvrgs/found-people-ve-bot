@@ -8,7 +8,7 @@ const ENCUENTRALOS_API_URL = "https://encuentralos.tecnosoft.dev/api/personas";
 
 const VENEZUELA_TE_BUSCA_PAGE_LIMIT = 250;
 const API_PAGE_LIMIT = 250;
-const API_PAGE_DELAY_MS = 650;
+const SLOW_API_PAGE_DELAY_MS = 650;
 const API_PAGE_SIZE = 100;
 
 type ApiPerson = {
@@ -16,17 +16,25 @@ type ApiPerson = {
   nombre?: unknown;
   edad?: unknown;
   ubicacion?: unknown;
+  ultima_ubicacion?: unknown;
   fecha?: unknown;
   descripcion?: unknown;
   estado?: unknown;
   localizadoPor?: unknown;
   localizadoRelacion?: unknown;
   localizadoNota?: unknown;
+  pv_por?: unknown;
+  pv_lugar?: unknown;
+  pv_salud?: unknown;
+  pv_relacion?: unknown;
+  cedula?: unknown;
   updatedAt?: unknown;
+  creado?: unknown;
 };
 
 type ApiPeopleResponse = {
   items?: ApiPerson[];
+  total?: number;
   totalPages?: number;
 };
 
@@ -102,7 +110,7 @@ function candidate(source: SourceName, id: string, fullName: string, relevantInf
   };
 }
 
-function parseVenezuelaTeBuscaPage(html: string, page: number) {
+export function parseVenezuelaTeBuscaPage(html: string, page: number) {
   const text = textFromHtml(html);
   const hasMore = /Cargar más/u.test(text);
   const section = text.match(/Registrar persona(.+?)(?:Cargar más|🇻🇪Venezuela te busca|Venezuela te busca|$)/u)?.[1] ?? "";
@@ -124,8 +132,9 @@ function parseVenezuelaTeBuscaPage(html: string, page: number) {
 
     const fullName = cleaned.slice(0, marker.index).trim();
     const details = cleaned.slice(marker.index).trim();
-    const sourceUrl = `${VENEZUELA_TE_BUSCA_URL}?status=found&page=${page}`;
-    const id = `${page}:${index}:${fullName}:${details.slice(-40)}`;
+    const recordId = createHash("sha256").update(`${fullName}:${details}`).digest("hex").slice(0, 16);
+    const sourceUrl = `${VENEZUELA_TE_BUSCA_URL}?status=found&page=${page}#record=${recordId}`;
+    const id = recordId;
     const item = candidate(
       "venezuelatebusca",
       id,
@@ -184,20 +193,25 @@ function apiPersonToCandidate(source: Extract<SourceName, "desaparecidos_terremo
   if (!id || !fullName) return null;
 
   const estado = asString(person.estado);
-  if (estado !== "localizado") return null;
+  const isFound = source === "encuentralos" ? estado === "encontrado" : estado === "localizado";
+  if (!isFound) return null;
 
   const fields = [
     "Localizado",
     asString(person.edad) ? `edad: ${asString(person.edad)}` : "",
-    asString(person.ubicacion) ? `ubicación: ${asString(person.ubicacion)}` : "",
-    asString(person.fecha) ? `fecha: ${asString(person.fecha)}` : "",
+    asString(person.ubicacion || person.ultima_ubicacion) ? `ubicación: ${asString(person.ubicacion || person.ultima_ubicacion)}` : "",
+    asString(person.fecha || person.creado) ? `fecha: ${asString(person.fecha || person.creado)}` : "",
     asString(person.descripcion) ? `descripción: ${asString(person.descripcion)}` : "",
-    asString(person.localizadoPor) ? `localizado por: ${asString(person.localizadoPor)}` : "",
-    asString(person.localizadoRelacion) ? `relación: ${asString(person.localizadoRelacion)}` : "",
-    asString(person.localizadoNota) ? `nota: ${asString(person.localizadoNota)}` : "",
+    asString(person.localizadoPor || person.pv_por) ? `localizado por: ${asString(person.localizadoPor || person.pv_por)}` : "",
+    asString(person.localizadoRelacion || person.pv_relacion) ? `relación: ${asString(person.localizadoRelacion || person.pv_relacion)}` : "",
+    asString(person.localizadoNota || person.pv_salud) ? `nota: ${asString(person.localizadoNota || person.pv_salud)}` : "",
+    asString(person.pv_lugar) ? `lugar: ${asString(person.pv_lugar)}` : "",
   ].filter(Boolean).join(" · ");
 
-  return candidate(source, id, fullName, `${source === "encuentralos" ? "Encuéntralos" : "Desaparecidos Terremoto Venezuela"} · ${fields}`, `${baseUrl}?persona=${encodeURIComponent(id)}`, { id, estado, updatedAt: person.updatedAt ?? null }, [asString(person.descripcion), asString(person.localizadoNota)].join(" "));
+  const sourceUrl = source === "encuentralos" ? `${baseUrl.replace(/\/$/, "")}/p/${encodeURIComponent(id)}` : `${baseUrl}?persona=${encodeURIComponent(id)}`;
+  const documentText = [asString(person.cedula), asString(person.descripcion), asString(person.localizadoNota), asString(person.pv_salud)].join(" ");
+
+  return candidate(source, id, fullName, `${source === "encuentralos" ? "Encuéntralos" : "Desaparecidos Terremoto Venezuela"} · ${fields}`, sourceUrl, { id, estado, updatedAt: person.updatedAt ?? person.creado ?? null }, documentText);
 }
 
 export function shouldStopApiPagination(status: number) {
@@ -213,12 +227,19 @@ export async function scrapeApiSource(source: Extract<SourceName, "desaparecidos
 
   for (let page = 1; page <= API_PAGE_LIMIT; page += 1) {
     throwIfAborted(signal);
-    if (page > 1) await sleep(API_PAGE_DELAY_MS, signal);
+    const pageDelayMs = apiPageDelayMs(source);
+    if (page > 1 && pageDelayMs > 0) await sleep(pageDelayMs, signal);
 
     const url = new URL(apiUrl);
-    url.searchParams.set("page", String(page));
-    url.searchParams.set("pageSize", String(API_PAGE_SIZE));
-    url.searchParams.set("estado", "localizado");
+    if (source === "encuentralos") {
+      url.searchParams.set("limit", String(API_PAGE_SIZE));
+      url.searchParams.set("offset", String((page - 1) * API_PAGE_SIZE));
+      url.searchParams.set("estado", "encontrado");
+    } else {
+      url.searchParams.set("page", String(page));
+      url.searchParams.set("pageSize", String(API_PAGE_SIZE));
+      url.searchParams.set("estado", "localizado");
+    }
 
     try {
       let response = await fetch(url, { headers: { Accept: "application/json" }, signal });
@@ -246,6 +267,10 @@ export async function scrapeApiSource(source: Extract<SourceName, "desaparecidos
       if (pageSignature) seenPageSignatures.add(pageSignature);
 
       candidates.push(...pageCandidates);
+      if (source === "encuentralos") {
+        const total = typeof body.total === "number" && Number.isFinite(body.total) ? body.total : null;
+        if (items.length < API_PAGE_SIZE || (total !== null && page * API_PAGE_SIZE >= total)) break;
+      }
       if (body.totalPages && page >= body.totalPages) break;
     } catch (error) {
       if (isAbortError(error, signal)) throw error;
@@ -254,6 +279,10 @@ export async function scrapeApiSource(source: Extract<SourceName, "desaparecidos
   }
 
   return { candidates, errors };
+}
+
+function apiPageDelayMs(source: Extract<SourceName, "desaparecidos_terremoto" | "encuentralos">) {
+  return source === "encuentralos" ? 0 : SLOW_API_PAGE_DELAY_MS;
 }
 
 export async function searchKnownFoundPersonSources(signal?: AbortSignal): Promise<{ candidates: SearchCandidateInput[]; errors: string[] }> {
