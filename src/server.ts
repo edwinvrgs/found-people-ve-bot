@@ -132,7 +132,17 @@ const server = createServer(async (request, response) => {
 
       const parsed = SearchQuerySchema.safeParse(Object.fromEntries(url.searchParams));
       if (!parsed.success) return json(response, 400, { error: "Invalid search" });
-      return json(response, 200, await searchPeople(parsed.data.name, parsed.data.page, parsed.data.pageSize));
+      const result = await searchPeople(parsed.data.name, parsed.data.page, parsed.data.pageSize);
+      captureSearchMatched({
+        surface: "public_api",
+        total: result.total,
+        resultCount: result.items.length,
+        page: parsed.data.page,
+        pageSize: parsed.data.pageSize,
+        query: parsed.data.name,
+        distinctId: hashIdentifier(clientKey) ?? "public_api_unknown",
+      });
+      return json(response, 200, result);
     }
 
     if (request.method === "GET" && url.pathname === "/api/v1/found-people") {
@@ -832,11 +842,21 @@ async function sendSearchResults(chatId: number, query: string, message?: NonNul
   await incrementMetric("telegram_search");
   const result = await searchPeople(parsed.data, 1, 5);
   const documentSearch = documentSearchLabel(parsed.data);
-  capture(telegramEvent("search_performed", chatId), telegramDistinctId(chatId, message?.from), {
+  const distinctId = telegramDistinctId(chatId, message?.from);
+  capture(telegramEvent("search_performed", chatId), distinctId, {
     queryLengthBucket: lengthBucket(parsed.data.length),
     queryType: documentSearch ? "document" : "name",
     resultCount: result.items.length,
     total: result.total,
+  });
+  captureSearchMatched({
+    surface: "telegram",
+    total: result.total,
+    resultCount: result.items.length,
+    page: 1,
+    pageSize: 5,
+    query: parsed.data,
+    distinctId,
   });
   const displayQuery = documentSearch ?? `“${escapeHtml(parsed.data)}”`;
   const text = result.total === 0
@@ -844,6 +864,20 @@ async function sendSearchResults(chatId: number, query: string, message?: NonNul
     : formatPeopleList(result.items, `Resultados para ${displayQuery}`, result.total);
 
   return sendMessage(chatId, text, [[button("🔎 Buscar", "search"), button("📋 Lista", "list:1")]]);
+}
+
+function captureSearchMatched(input: { surface: "telegram" | "public_api"; total: number; resultCount: number; page: number; pageSize: number; query: string; distinctId: string }) {
+  if (input.total <= 0) return;
+  const documentSearch = Boolean(documentSearchLabel(input.query));
+  capture("search_matched", input.distinctId, {
+    surface: input.surface,
+    queryLengthBucket: lengthBucket(input.query.length),
+    queryType: documentSearch ? "document" : "name",
+    resultCount: input.resultCount,
+    total: input.total,
+    page: input.page,
+    pageSize: input.pageSize,
+  });
 }
 
 function documentSearchLabel(query: string) {

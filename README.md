@@ -172,7 +172,8 @@ Telegram events:
 
 - `message_received`: message received by the bot. Does not include message text.
 - `telegram_command`: command used (`ayuda`, `buscar`, `lista`, `reportar`, etc.; admin commands keep English names).
-- `search_performed`: search executed; includes length bucket, query type (`name`/`document`), and result count. Does not include the search text or ID number.
+- `search_performed`: Telegram search executed; includes length bucket, query type (`name`/`document`), and result count. Does not include the search text or ID number.
+- `search_matched`: search returned at least one match; emitted for Telegram and public API searches. Includes surface, length bucket, query type, pagination, and counts. Does not include the search text, ID number, names, or source URLs.
 - `list_viewed`: list viewed; includes page and counts.
 - `citizen_report_created`: citizen report created from Telegram; only flags/buckets, no name, location, or source.
 - `feedback_submitted`: feedback sent; only length bucket, not the content.
@@ -180,6 +181,7 @@ Telegram events:
 
 External API events:
 
+- `search_matched`: public `/api/search` returned at least one match; uses a hashed client identifier and contains no query text or raw ID.
 - `external_api_list_requested`: `GET /api/v1/found-people` usage; includes pagination/counts and hashed client ID.
 - `external_report_created`: report created through `POST /api/v1/found-people/reports`; only flags and hashed client ID.
 
