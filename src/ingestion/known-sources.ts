@@ -6,9 +6,9 @@ const VENEZUELA_TE_BUSCA_URL = "https://venezuelatebusca.com/";
 const DESAPARECIDOS_API_URL = "https://desaparecidos-terremoto-api.theempire.tech/api/personas";
 const ENCUENTRALOS_API_URL = "https://encuentralos.tecnosoft.dev/api/personas";
 
-const DEFAULT_VENEZUELA_TE_BUSCA_PAGES = 250;
-const DEFAULT_API_PAGES = 250;
-const DEFAULT_API_PAGE_DELAY_MS = 650;
+const VENEZUELA_TE_BUSCA_PAGE_LIMIT = 250;
+const API_PAGE_LIMIT = 250;
+const API_PAGE_DELAY_MS = 650;
 const API_PAGE_SIZE = 100;
 
 type ApiPerson = {
@@ -31,17 +31,6 @@ type ApiPeopleResponse = {
 };
 
 type SourceName = "venezuelatebusca" | "desaparecidos_terremoto" | "encuentralos";
-
-// Links reviewed from the public earthquake index that are intentionally not ingested as found-person sources:
-// - https://www.ayudasismo.org: affected people / needs coordination, not found-person records.
-// - https://t.me/encontrados_ve_bot: this bot is the ingestion target, not an upstream source.
-// - https://terremotovenezuela.com: building damage / trapped people map, not found-person records.
-// - official/emergency/donation/media links: useful resources, but not structured found-person sources.
-
-function configuredLimit(name: string, fallback: number) {
-  const value = Number(process.env[name]);
-  return Number.isInteger(value) && value >= 0 ? value : fallback;
-}
 
 function throwIfAborted(signal?: AbortSignal) {
   signal?.throwIfAborted();
@@ -157,10 +146,9 @@ async function scrapeVenezuelaTeBusca(enabled: boolean, signal?: AbortSignal) {
 
   const candidates: SearchCandidateInput[] = [];
   const errors: string[] = [];
-  const pageLimit = configuredLimit("VENEZUELA_TE_BUSCA_PAGES", DEFAULT_VENEZUELA_TE_BUSCA_PAGES);
   const seenPageSignatures = new Set<string>();
 
-  for (let page = 1; page <= pageLimit; page += 1) {
+  for (let page = 1; page <= VENEZUELA_TE_BUSCA_PAGE_LIMIT; page += 1) {
     throwIfAborted(signal);
     const url = new URL(VENEZUELA_TE_BUSCA_URL);
     url.searchParams.set("status", "found");
@@ -221,13 +209,11 @@ export async function scrapeApiSource(source: Extract<SourceName, "desaparecidos
 
   const candidates: SearchCandidateInput[] = [];
   const errors: string[] = [];
-  const pageLimit = configuredLimit(source === "encuentralos" ? "ENCUENTRALOS_API_PAGES" : "DESAPARECIDOS_TERREMOTO_API_PAGES", DEFAULT_API_PAGES);
-  const pageDelayMs = configuredLimit("FOUND_PERSON_SOURCES_PAGE_DELAY_MS", DEFAULT_API_PAGE_DELAY_MS);
   const seenPageSignatures = new Set<string>();
 
-  for (let page = 1; page <= pageLimit; page += 1) {
+  for (let page = 1; page <= API_PAGE_LIMIT; page += 1) {
     throwIfAborted(signal);
-    if (page > 1 && pageDelayMs > 0) await sleep(pageDelayMs, signal);
+    if (page > 1) await sleep(API_PAGE_DELAY_MS, signal);
 
     const url = new URL(apiUrl);
     url.searchParams.set("page", String(page));

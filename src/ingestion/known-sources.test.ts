@@ -3,29 +3,13 @@ import { afterEach, describe, it } from "node:test";
 import { scrapeApiSource, searchKnownFoundPersonSources, shouldStopApiPagination } from "./known-sources.js";
 
 const originalFetch = globalThis.fetch;
-const originalVenezuelaTeBuscaPageLimit = process.env.VENEZUELA_TE_BUSCA_PAGES;
-const originalDesaparecidosPageLimit = process.env.DESAPARECIDOS_TERREMOTO_API_PAGES;
-const originalEncuentralosPageLimit = process.env.ENCUENTRALOS_API_PAGES;
-const originalPageDelay = process.env.FOUND_PERSON_SOURCES_PAGE_DELAY_MS;
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
-  if (originalVenezuelaTeBuscaPageLimit === undefined) delete process.env.VENEZUELA_TE_BUSCA_PAGES;
-  else process.env.VENEZUELA_TE_BUSCA_PAGES = originalVenezuelaTeBuscaPageLimit;
-  if (originalDesaparecidosPageLimit === undefined) delete process.env.DESAPARECIDOS_TERREMOTO_API_PAGES;
-  else process.env.DESAPARECIDOS_TERREMOTO_API_PAGES = originalDesaparecidosPageLimit;
-  if (originalEncuentralosPageLimit === undefined) delete process.env.ENCUENTRALOS_API_PAGES;
-  else process.env.ENCUENTRALOS_API_PAGES = originalEncuentralosPageLimit;
-  if (originalPageDelay === undefined) delete process.env.FOUND_PERSON_SOURCES_PAGE_DELAY_MS;
-  else process.env.FOUND_PERSON_SOURCES_PAGE_DELAY_MS = originalPageDelay;
 });
 
 describe("Known found-person source ingestion", () => {
   it("queries known source URLs directly", async () => {
-    process.env.VENEZUELA_TE_BUSCA_PAGES = "1";
-    process.env.DESAPARECIDOS_TERREMOTO_API_PAGES = "1";
-    process.env.ENCUENTRALOS_API_PAGES = "1";
-    process.env.FOUND_PERSON_SOURCES_PAGE_DELAY_MS = "0";
     const requestedUrls: string[] = [];
 
     globalThis.fetch = (async (input: Parameters<typeof fetch>[0]) => {
@@ -60,8 +44,6 @@ describe("Known found-person API pagination", () => {
   });
 
   it("does not burn every page when an API source requires reCAPTCHA", async () => {
-    process.env.DESAPARECIDOS_TERREMOTO_API_PAGES = "250";
-    process.env.FOUND_PERSON_SOURCES_PAGE_DELAY_MS = "0";
     const requestedUrls: string[] = [];
 
     globalThis.fetch = (async (input: Parameters<typeof fetch>[0]) => {
