@@ -1,3 +1,5 @@
+import { isPersonSpecificSourceUrl } from "../source-identity.js";
+
 export type DuplicateAuditRow = {
   id: string;
   fullName: string;
@@ -280,19 +282,6 @@ function canonicalScore(row: DuplicateAuditRow) {
     + sourcePriority(row)
     + Math.min(500, String(row.relevantInfo ?? "").length)
     + Math.min(100, normalizeName(row.fullName).length);
-}
-
-function isPersonSpecificSourceUrl(sourceUrl: string) {
-  try {
-    const url = new URL(sourceUrl);
-    if (url.hostname === "venezuelatebusca.com") return /^#record=.+/.test(url.hash);
-    if (url.searchParams.get("persona")) return true;
-    if (/\/p\/[A-Za-z0-9_-]+/.test(url.pathname)) return true;
-    if (url.hostname === "github.com" && /^#L\d+/.test(url.hash)) return true;
-    return false;
-  } catch {
-    return false;
-  }
 }
 
 function sourcePriority(row: DuplicateAuditRow) {

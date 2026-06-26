@@ -66,6 +66,11 @@ describe("runFoundPeopleIngest", () => {
       assert.equal(report.counts.upserted, 0);
       assert.equal(report.accepted[0]?.fullName, "María Pérez");
       assert.equal(report.accepted[0]?.documentId, "12345678");
+      assert.equal(report.accepted[0]?.identity.isPersonSpecificSourceUrl, false);
+      assert.equal(report.pipeline.bronze.candidateRows, 2);
+      assert.equal(report.pipeline.silver.acceptedRows, 1);
+      assert.deepEqual(report.pipeline.gold.automaticMatchKeys, ["source_hash", "document_id", "person_specific_source_url"]);
+      assert.deepEqual(report.pipeline.gold.manualReviewOnlyKeys, ["shared_list_source_url", "same_normalized_name", "similar_name"]);
 
       const persisted = JSON.parse(readFileSync(outputPath, "utf8"));
       assert.equal(persisted.counts.accepted, 1);

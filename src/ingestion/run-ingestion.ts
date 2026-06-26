@@ -1,6 +1,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { normalizeDocumentId, sanitizeRelevantInfo } from "./sanitize.js";
+import { sourceIdentityFor } from "./source-identity.js";
 import type { RejectedSearchCandidate, SearchCandidateInput, SearchProviderResult } from "./search-provider.js";
 
 export const DEFAULT_OUTPUT_DIR = "artifacts/found-people-ingest";
@@ -12,6 +13,7 @@ type SourceSummary = {
   accepted: number;
   skipped: number;
   withDocumentId: number;
+  withPersonSpecificSourceUrl: number;
 };
 
 type NormalizedPerson = {
@@ -21,6 +23,10 @@ type NormalizedPerson = {
   documentId: string | null;
   sourceHash: string;
   raw: Record<string, unknown>;
+  identity: {
+    sourceUrlMatchKey: string | null;
+    isPersonSpecificSourceUrl: boolean;
+  };
 };
 
 type SkippedPerson = NormalizedPerson & { reasons: string[] };
@@ -62,6 +68,28 @@ export type IngestionReport = {
   accepted: NormalizedPerson[];
   skipped: SkippedPerson[];
   rejectedByProvider: RejectedSearchCandidate[];
+  pipeline: {
+    bronze: {
+      description: string;
+      candidateRows: number;
+      rejectedByProvider: number;
+      providerErrors: number;
+    };
+    silver: {
+      description: string;
+      acceptedRows: number;
+      skippedRows: number;
+      withDocumentId: number;
+      withPersonSpecificSourceUrl: number;
+    };
+    gold: {
+      description: string;
+      wroteToDatabase: boolean;
+      upsertedRows: number;
+      automaticMatchKeys: string[];
+      manualReviewOnlyKeys: string[];
+    };
+  };
 };
 
 export async function runFoundPeopleIngest(options: RunIngestionOptions) {
@@ -112,6 +140,7 @@ export async function runFoundPeopleIngest(options: RunIngestionOptions) {
       accepted.push(normalized.person);
       incrementSourceSummary(sources, source, "accepted");
       if (normalized.person.documentId) incrementSourceSummary(sources, source, "withDocumentId");
+      if (normalized.person.identity.isPersonSpecificSourceUrl) incrementSourceSummary(sources, source, "withPersonSpecificSourceUrl");
     } else {
       skipped.push({ ...normalized.person, reasons: normalized.reasons });
       incrementSourceSummary(sources, source, "skipped");
@@ -123,6 +152,7 @@ export async function runFoundPeopleIngest(options: RunIngestionOptions) {
     accepted: accepted.length,
     skipped: skipped.length,
     withDocumentId: accepted.filter((person) => person.documentId).length,
+    withPersonSpecificSourceUrl: accepted.filter((person) => person.identity.isPersonSpecificSourceUrl).length,
     sources,
   }, "Found-person candidates normalized");
 
@@ -154,6 +184,28 @@ export async function runFoundPeopleIngest(options: RunIngestionOptions) {
     accepted,
     skipped,
     rejectedByProvider: result.rejected ?? [],
+    pipeline: {
+      bronze: {
+        description: "Raw provider candidates and provider-level rejections/errors before trust decisions.",
+        candidateRows: result.candidates.length,
+        rejectedByProvider: result.rejected?.length ?? 0,
+        providerErrors: result.errors.length,
+      },
+      silver: {
+        description: "Normalized candidates with validated names, document IDs, sanitized info, source hashes, and source URL identity classification.",
+        acceptedRows: accepted.length,
+        skippedRows: skipped.length,
+        withDocumentId: accepted.filter((person) => person.documentId).length,
+        withPersonSpecificSourceUrl: accepted.filter((person) => person.identity.isPersonSpecificSourceUrl).length,
+      },
+      gold: {
+        description: "Canonical found_people rows written through guarded upsert rules; only source_hash, document_id, and person-specific source URLs can auto-match.",
+        wroteToDatabase: options.write,
+        upsertedRows: upserted,
+        automaticMatchKeys: ["source_hash", "document_id", "person_specific_source_url"],
+        manualReviewOnlyKeys: ["shared_list_source_url", "same_normalized_name", "similar_name"],
+      },
+    },
   };
 
   writeFileSync(outputPath, `${JSON.stringify(report, null, 2)}\n`);
@@ -173,6 +225,7 @@ function normalizeCandidate(candidate: SearchCandidateInput) {
   const fullName = candidate.fullName.replace(/\s+/g, " ").trim();
   const relevantInfo = sanitizeRelevantInfo(candidate.relevantInfo);
   const documentId = normalizeDocumentId(candidate.documentId);
+  const identity = sourceIdentityFor(candidate.sourceUrl);
   const reasons: string[] = [];
 
   if (fullName.length < 2) reasons.push("name_too_short");
@@ -189,6 +242,10 @@ function normalizeCandidate(candidate: SearchCandidateInput) {
       documentId,
       sourceHash: candidate.sourceHash,
       raw: candidate.raw ?? {},
+      identity: {
+        sourceUrlMatchKey: identity.sourceUrlMatchKey,
+        isPersonSpecificSourceUrl: identity.isPersonSpecificSourceUrl,
+      },
     },
   };
 }
@@ -235,7 +292,7 @@ function sourceName(raw: Record<string, unknown> | undefined) {
 }
 
 function emptySourceSummary(): SourceSummary {
-  return { candidates: 0, accepted: 0, skipped: 0, withDocumentId: 0 };
+  return { candidates: 0, accepted: 0, skipped: 0, withDocumentId: 0, withPersonSpecificSourceUrl: 0 };
 }
 
 function incrementSourceSummary(sources: Record<string, SourceSummary>, source: string, field: keyof SourceSummary) {

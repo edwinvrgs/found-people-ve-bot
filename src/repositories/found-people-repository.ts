@@ -1,5 +1,6 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "../prisma.js";
+import { personSpecificSourceUrlMatchKey } from "../ingestion/source-identity.js";
 import type { FoundPerson, FoundPersonExternal, FoundPersonWithMetadata, RecordStatus } from "../db.js";
 
 type CountRow = { count: bigint | number | string };
@@ -72,6 +73,7 @@ type PreparedUpsertPerson = UpsertPersonInput & {
   hash: string;
   status: RecordStatus;
   documentId: string | null;
+  sourceUrlMatchKey: string | null;
 };
 
 export async function upsertPeople(people: UpsertPersonInput[]) {
@@ -115,6 +117,7 @@ async function prepareUpsertPerson(person: UpsertPersonInput): Promise<PreparedU
     hash: person.sourceHash ?? await sha256(`${person.sourceUrl}:${person.fullName}`),
     status: person.status ?? "verified",
     documentId: normalizeDocumentId(person.documentId),
+    sourceUrlMatchKey: personSpecificSourceUrlMatchKey(person.sourceUrl),
   };
 }
 
@@ -227,6 +230,7 @@ type IngestMatchLookup = {
   hash: string;
   documentId: string | null;
   sourceUrl: string;
+  sourceUrlMatchKey?: string | null;
 };
 
 export class IngestMatchCache {
@@ -241,9 +245,10 @@ export class IngestMatchCache {
   }
 
   find(person: IngestMatchLookup) {
+    const sourceUrlMatchKey = person.sourceUrlMatchKey ?? personSpecificSourceUrlMatchKey(person.sourceUrl);
     return this.bySourceHash.get(person.hash)
       ?? (person.documentId ? this.byDocumentId.get(person.documentId) : undefined)
-      ?? this.bySourceUrl.get(person.sourceUrl)
+      ?? (sourceUrlMatchKey ? this.bySourceUrl.get(sourceUrlMatchKey) : undefined)
       ?? null;
   }
 
@@ -251,7 +256,8 @@ export class IngestMatchCache {
     const overwrite = options.overwrite ?? true;
     setIfAllowed(this.bySourceHash, row.sourceHash, row, overwrite);
     if (row.documentId) setIfAllowed(this.byDocumentId, row.documentId, row, overwrite);
-    setIfAllowed(this.bySourceUrl, row.sourceUrl, row, overwrite);
+    const sourceUrlMatchKey = personSpecificSourceUrlMatchKey(row.sourceUrl);
+    if (sourceUrlMatchKey) setIfAllowed(this.bySourceUrl, sourceUrlMatchKey, row, overwrite);
   }
 }
 
@@ -264,10 +270,10 @@ async function prefetchExistingIngestMatches(people: PreparedUpsertPerson[]) {
 
   const sourceHashes = uniqueValues(people.map((person) => person.hash));
   const documentIds = uniqueValues(people.map((person) => person.documentId).filter((value): value is string => Boolean(value)));
-  const sourceUrls = uniqueValues(people.map((person) => person.sourceUrl));
+  const sourceUrls = uniqueValues(people.map((person) => person.sourceUrlMatchKey).filter((value): value is string => Boolean(value)));
   const filters: Prisma.Sql[] = [Prisma.sql`source_hash IN (${Prisma.join(sourceHashes)})`];
   if (documentIds.length > 0) filters.push(Prisma.sql`document_id IN (${Prisma.join(documentIds)})`);
-  filters.push(Prisma.sql`source_url IN (${Prisma.join(sourceUrls)})`);
+  if (sourceUrls.length > 0) filters.push(Prisma.sql`source_url IN (${Prisma.join(sourceUrls)})`);
 
   const rows = await prisma.$queryRaw<ExistingIngestPerson[]>`
     SELECT ${selectIngestMatchColumnsSql()}
