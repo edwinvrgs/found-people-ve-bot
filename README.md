@@ -20,8 +20,6 @@ Current sources:
 - <https://venezuelatebusca.com/>
 - <https://desaparecidosterremotovenezuela.com/>
 - <https://encuentralos.tecnosoft.dev/>
-- Citizen reports submitted through the Telegram bot
-- External reports submitted through the authenticated public API
 
 ## Features
 
@@ -83,7 +81,6 @@ Response:
       "fullName": "Maria Perez",
       "relevantInfo": "Hospital / shelter / public note",
       "sourceUrl": "https://example.com/source",
-      "status": "verified",
       "documentId": "12345678"
     }
   ],
@@ -96,7 +93,6 @@ Response:
 }
 ```
 
-Only `verified` and `citizen_report` records are public. `needs_review` and `removed` records are hidden.
 
 ### Report a found person
 
@@ -121,7 +117,7 @@ Idempotency-Key: optional-stable-report-id
 }
 ```
 
-External reports are stored as `citizen_report`, rate-limited, validated with a strict schema, and sent to the admin for review.
+External reports are rate-limited, validated with a strict schema, stored as regular source-linked found-person records, and sent to the admin for visibility. There is no status/review workflow for now.
 
 ## Telegram commands
 
@@ -129,14 +125,13 @@ External reports are stored as `citizen_report`, rate-limited, validated with a 
 - `/buscar Nombre Apellido` — search by name.
 - `/buscar V12345678` — search by cédula.
 - `/lista` — show paginated list.
-- `/reportar` — start guided found-person report.
 - `/fuentes` — show sources and limitations.
 - `/sugerencia` — send feedback to admin.
 - `/cancelar` — cancel pending flow.
 
 Free-text messages are treated as searches.
 
-Admin-only commands: `/admin_stats`, `/admin_recent`, `/admin_digest`, `/admin_verify`, `/admin_review`, `/admin_hide`, `/admin_delete`, `/admin_help`.
+Admin-only commands: `/admin_stats`, `/admin_delete`, `/admin_help`.
 
 ## Ingestion
 
@@ -172,7 +167,6 @@ Or export variables yourself and use watch mode:
 ```bash
 DATABASE_URL='postgresql://user:pass@localhost:5432/found_people' \
 INGEST_SECRET='dev-ingest-secret' \
-EXTERNAL_API_SECRET='dev-external-secret' \
 TELEGRAM_WEBHOOK_SECRET='dev-telegram-secret' \
 PUBLIC_BASE_URL='http://localhost:3000' \
 npm run dev

@@ -6,16 +6,13 @@ import {
   getPersonById,
   listPeople,
   listPeopleExternal,
-  listRecentCitizenReports,
   searchPeople,
   searchPeopleByDocument,
   searchPeopleByName,
   searchPeopleExternal,
-  updatePersonStatus,
   upsertPeople,
   type UpsertPersonInput,
 } from "../repositories/found-people-repository.js";
-import type { RecordStatus } from "../db.js";
 
 export type ExternalFoundPeopleSearch = {
   page: number;
@@ -35,16 +32,6 @@ export type ExternalReportInput = {
     contact?: string;
     service?: string;
   };
-};
-
-export type CitizenReportInput = {
-  fullName: string;
-  location: string;
-  sourceUrl: string;
-  submittedSourceUrl?: string | null;
-  messageId: number;
-  chatId: number;
-  reporter: Record<string, unknown>;
 };
 
 export type ExternalReportOptions = {
@@ -80,41 +67,12 @@ export function removePersonById(id: string) {
   return deletePersonById(id);
 }
 
-export function setPersonStatus(id: string, status: RecordStatus) {
-  return updatePersonStatus(id, status);
-}
-
 export function getPersonDetails(id: string) {
   return getPersonById(id);
 }
 
-export function listCitizenReports(limit: number, status?: RecordStatus) {
-  return listRecentCitizenReports(limit, status);
-}
-
 export function getStats() {
   return getFoundPeopleStats();
-}
-
-export async function createCitizenReport(input: CitizenReportInput) {
-  const relevantInfo = `Reporte ciudadano — ubicación: ${input.location}${input.submittedSourceUrl ? " — fuente enviada por usuario" : " — sin enlace externo"}`;
-  const [person] = await upsertPeople([{
-    fullName: input.fullName,
-    relevantInfo,
-    sourceUrl: input.sourceUrl,
-    status: "citizen_report",
-    sourceHash: `telegram-report:${input.chatId}:${input.messageId}`,
-    raw: {
-      provider: "telegram_report",
-      location: input.location,
-      submittedSourceUrl: input.submittedSourceUrl ?? null,
-      reporter: input.reporter,
-      messageId: input.messageId,
-      chatId: input.chatId,
-    },
-  }]);
-
-  return person;
 }
 
 export function buildExternalReportUpsertInput(payload: ExternalReportInput, options: ExternalReportOptions): UpsertPersonInput {
@@ -132,7 +90,6 @@ export function buildExternalReportUpsertInput(payload: ExternalReportInput, opt
     fullName: payload.fullName,
     relevantInfo,
     sourceUrl,
-    status: "citizen_report",
     sourceHash: `external-report:${reportHash}`,
     raw: {
       provider: "external_report_api",

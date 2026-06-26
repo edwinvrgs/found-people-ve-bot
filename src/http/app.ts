@@ -4,7 +4,7 @@ import { errorDetails, logger } from "../logger.js";
 import { createExternalReport, ingestPeople, listExternalFoundPeople, listPublicPeople, removePeopleBySourceUrl } from "../services/found-people-service.js";
 import { incrementMetric } from "../services/metrics-service.js";
 import { publicBaseUrl } from "../config/env.js";
-import { adminActionButtons, formatAdminPerson, handleTelegramUpdate, notifyAdmin, TelegramUpdateSchema } from "../telegram/bot.js";
+import { formatAdminPerson, handleTelegramUpdate, notifyAdmin, TelegramUpdateSchema } from "../telegram/bot.js";
 import { MAX_JSON_BODY_BYTES, PUBLIC_API_LIMIT } from "./constants.js";
 import { DeletePersonSchema, ExternalListQuerySchema, ExternalReportSchema, IngestSchema, lengthBucket, PeopleQuerySchema } from "./schemas.js";
 import { guardAdminRequest, guardExternalReportRequest, guardTelegramWebhookRequest } from "./security.js";
@@ -104,7 +104,7 @@ export function createApp() {
       idempotencyKeyPresent: typeof request.headers["idempotency-key"] === "string",
       clientId: hashIdentifier(clientKey),
     });
-    await notifyAdmin(`🆕 <b>Reporte externo insertado</b>\n\n${formatAdminPerson(report)}`, adminActionButtons(report.id));
+    await notifyAdmin(`🆕 <b>Reporte externo insertado</b>\n\n${formatAdminPerson(report)}`);
     return json(reply, 201, { data: report });
   });
 

@@ -1,10 +1,10 @@
 import { alias, capture, identify } from "../analytics.js";
-import type { FoundPerson, RecordStatus } from "../db.js";
+import type { FoundPerson } from "../db.js";
 import { env } from "../config/env.js";
 import { TELEGRAM_CHAT_LIMIT } from "../http/constants.js";
 import { lengthBucket, TelegramSearchQuerySchema } from "../http/schemas.js";
 import { rateLimit } from "../rate-limit.js";
-import { createCitizenReport, getPersonDetails, getStats, listCitizenReports, listPublicPeople, removePersonById, removePeopleBySourceUrl, searchPublicPeople, setPersonStatus } from "../services/found-people-service.js";
+import { getPersonDetails, getStats, listPublicPeople, removePersonById, removePeopleBySourceUrl, searchPublicPeople } from "../services/found-people-service.js";
 import { incrementMetric } from "../services/metrics-service.js";
 import { captureSearchMatched, documentSearchLabel } from "../search-analytics.js";
 import { answerCallback, button, editMessage, sendMessage } from "./client.js";
@@ -42,13 +42,7 @@ export const TelegramUpdateSchema = z.object({
 
 type PendingChatAction =
   | { kind: "search"; expiresAt: number }
-  | { kind: "feedback"; expiresAt: number }
-  | { kind: "report_name"; draft: Partial<ReportDraft>; expiresAt: number }
-  | { kind: "report_location"; draft: Partial<ReportDraft>; expiresAt: number }
-  | { kind: "report_source"; draft: Partial<ReportDraft>; expiresAt: number }
-  | { kind: "report_confirm"; draft: ReportDraft; expiresAt: number };
-
-type ReportDraft = { fullName: string; location: string; sourceUrl?: string | null };
+  | { kind: "feedback"; expiresAt: number };
 
 const pendingChatActions = new Map<number, PendingChatAction>();
 const shortPersonIds = new Map<string, { id: string; expiresAt: number }>();
@@ -146,11 +140,6 @@ export async function handleTelegramUpdate(update: TelegramUpdate) {
     return handleFeedbackCommand(message, text);
   }
 
-  if (isCommand(text, "reportar")) {
-    pendingChatActions.delete(message.chat.id);
-    captureTelegramCommand(message, "reportar");
-    return handleReportCommand(message, text);
-  }
 
   if (isCommand(text, "buscar")) {
     pendingChatActions.delete(message.chat.id);
@@ -196,7 +185,7 @@ async function handlePendingChatAction(message: NonNullable<TelegramUpdate["mess
     pendingChatActions.delete(message.chat.id);
     return submitFeedback(message, text.trim());
   }
-  return handleReportStep(message, text.trim(), pending);
+  return sendMessage(message.chat.id, "No hay una operación pendiente para ese mensaje. Usa /ayuda para ver las opciones.");
 }
 
 function rememberPersonId(id: string) {
@@ -226,49 +215,12 @@ async function handleAdminCommand(message: NonNullable<TelegramUpdate["message"]
     const stats = await getStats();
     return sendMessage(message.chat.id, `📊 <b>Stats</b>
 
-Visible: ${stats.visible}
 Total in database: ${stats.total}
-Verified: ${stats.verified}
-Citizen reports: ${stats.citizenReports}
-Needs review: ${stats.needsReview}
-Hidden: ${stats.removed}
 
 Metrics:
 ${formatMetrics(stats.metrics)}`);
   }
 
-  if (text.startsWith("/admin_recent")) {
-    const parts = text.split(/\s+/).slice(1);
-    const limit = Math.min(Number(parts[0]) || 5, 10);
-    const status = parseStatus(parts[1]);
-    const reports = await listCitizenReports(limit, status ?? undefined);
-    if (reports.length === 0) return sendMessage(message.chat.id, "No recent citizen reports.");
-    return sendMessage(message.chat.id, formatAdminPeopleList(reports, `Latest citizen reports (${reports.length})`));
-  }
-
-  if (text.startsWith("/admin_digest")) {
-    const stats = await getStats();
-    const reports = await listCitizenReports(5);
-    return sendMessage(message.chat.id, `🧾 <b>Admin digest</b>
-
-Visible: ${stats.visible}
-Citizen reports: ${stats.citizenReports}
-Needs review: ${stats.needsReview}
-
-${reports.length ? formatAdminPeopleList(reports, "Latest reports") : "No recent reports."}`);
-  }
-
-  if (text.startsWith("/admin_verify") || text.startsWith("/admin_review") || text.startsWith("/admin_hide")) {
-    const [command, rawId] = text.split(/\s+/, 2);
-    if (!rawId) return sendMessage(message.chat.id, `Usage: ${command} id`);
-    const status: RecordStatus = command === "/admin_verify" ? "verified" : command === "/admin_review" ? "needs_review" : "removed";
-    const rows = await setPersonStatus(resolvePersonId(rawId), status);
-    if (rows.length === 0) return sendMessage(message.chat.id, "Record not found.");
-    await incrementMetric(`admin_${status}`);
-    return sendMessage(message.chat.id, `✅ Status updated to <b>${escapeHtml(statusLabel(status))}</b>:
-
-${formatAdminPerson(rows[0])}`);
-  }
 
   if (text.startsWith("/admin_delete")) {
     const target = text.replace(/^\/admin_delete\s*/i, "").trim();
@@ -290,7 +242,7 @@ function isAdminChat(chatId: number) {
 }
 
 function adminHelpText() {
-  return "🔐 <b>Admin commands</b>\n\n/admin_stats — metrics and totals\n/admin_recent [n] [status] — latest citizen reports\n/admin_digest — quick digest\n/admin_verify id — mark as verified\n/admin_review id — mark as needs review\n/admin_hide id — hide without deleting\n/admin_delete id-or-url — permanently delete\n/admin_help — show this help";
+  return "🔐 <b>Admin commands</b>\n\n/admin_stats — metrics and totals\n/admin_delete id-or-url — permanently delete\n/admin_help — show this help";
 }
 
 async function handleCallback(callback: NonNullable<TelegramUpdate["callback_query"]>) {
@@ -319,15 +271,6 @@ async function handleCallback(callback: NonNullable<TelegramUpdate["callback_que
     return editMessage(chatId, messageId, "Escribe el nombre, apellido o cédula que quieres buscar.\n\nEjemplos: Maria Perez · V12345678", [[button("📋 Ver lista", "list:1")]]);
   }
 
-  const adminActionMatch = data.match(/^adm:(verify|review|hide):([a-f0-9]{12})$/);
-  if (adminActionMatch && isAdminChat(chatId)) {
-    const status = adminActionMatch[1] === "verify" ? "verified" : adminActionMatch[1] === "review" ? "needs_review" : "removed";
-    const rows = await setPersonStatus(resolvePersonId(adminActionMatch[2]), status as RecordStatus);
-    await answerCallback(callback.id, rows.length ? "Actualizado" : "No encontrado");
-    return rows.length ? sendMessage(chatId, `Estado actualizado:
-
-${formatAdminPerson(rows[0])}`) : undefined;
-  }
 
   const listMatch = data.match(/^list:(\d+)$/);
   if (listMatch) {
@@ -345,9 +288,9 @@ async function sendMenu(chatId: number) {
 function menuText() {
   return `<b>Personas Encontradas 🇻🇪</b>
 
-Este bot ayuda a consultar y reportar personas encontradas tras el terremoto en Venezuela.
+Este bot ayuda a consultar personas encontradas tras el terremoto en Venezuela.
 
-Reúne información de fuentes públicas, transcripciones de listas de atención médica y reportes ciudadanos para apoyar a familiares, voluntarios y comunidades durante la emergencia.
+Reúne información de fuentes públicas y transcripciones de listas de atención médica para apoyar a familiares, voluntarios y comunidades durante la emergencia.
 
 Antes de tomar decisiones, verifica siempre la información con familiares, fuentes oficiales o contactos directos.
 
@@ -356,7 +299,6 @@ Antes de tomar decisiones, verifica siempre la información con familiares, fuen
 • /buscar nombre — buscar por nombre
 • /buscar V12345678 — buscar por cédula
 • /lista — ver lista de personas encontradas
-• /reportar — reportar una persona encontrada
 • /fuentes — fuentes y limitaciones
 • /sugerencia — enviar correcciones o comentarios
 • /cancelar — cancelar una operación
@@ -385,8 +327,7 @@ async function handleSourceCommand(message: NonNullable<TelegramUpdate["message"
   return sendMessage(message.chat.id, `ℹ️ <b>Fuente del registro</b>
 
 ${formatAdminPerson(person)}
-
-Estado: ${statusEmoji(person.status)} ${escapeHtml(statusLabel(person.status))}`);
+`);
 }
 
 function sourceText() {
@@ -399,10 +340,8 @@ Fuentes actuales:
 • https://venezuelatebusca.com/
 • https://desaparecidosterremotovenezuela.com/
 • https://encuentralos.tecnosoft.dev/
-• Reportes ciudadanos enviados al bot
-• Reportes externos recibidos por la API pública autenticada
 
-Cada resultado muestra un enlace cuando está disponible. Los reportes ciudadanos ayudan en la emergencia, pero no reemplazan confirmación familiar, canales oficiales o la fuente original.
+Cada resultado muestra un enlace cuando está disponible. La información pública ayuda en la emergencia, pero no reemplaza confirmación familiar, canales oficiales o la fuente original.
 
 Si ves un error, escribe /sugerencia para reportarlo.`;
 }
@@ -432,93 +371,6 @@ ${escapeHtml(feedback)}`);
   return sendMessage(message.chat.id, "Gracias. Recibí tu sugerencia y se la envié al equipo.");
 }
 
-async function handleReportCommand(message: NonNullable<TelegramUpdate["message"]>, text: string) {
-  const payload = commandPayload(text);
-  if (payload) return submitReport(message, parseReportPayload(payload));
-  setPendingChatAction(message.chat.id, { kind: "report_name", draft: {} });
-  return sendMessage(message.chat.id, "Vamos a agregar un reporte ciudadano.\n\n¿Cuál es el <b>nombre y apellido</b> de la persona encontrada?\n\nPuedes escribir /cancelar para cancelar.");
-}
-
-async function handleReportStep(message: NonNullable<TelegramUpdate["message"]>, text: string, pending: PendingChatAction) {
-  if (pending.kind === "report_name") {
-    if (text.length < 4) {
-      setPendingChatAction(message.chat.id, { kind: "report_name", draft: pending.draft });
-      return sendMessage(message.chat.id, "El nombre parece muy corto. Escríbelo de nuevo, por favor.");
-    }
-    setPendingChatAction(message.chat.id, { kind: "report_location", draft: { ...pending.draft, fullName: text } });
-    return sendMessage(message.chat.id, "¿Dónde fue encontrada o dónde está?\n\nEjemplo: Refugio La Carlota, Hospital Pérez Carreño, La Guaira...");
-  }
-
-  if (pending.kind === "report_location") {
-    if (text.length < 2) {
-      setPendingChatAction(message.chat.id, { kind: "report_location", draft: pending.draft });
-      return sendMessage(message.chat.id, "La ubicación parece muy corta. Escríbela de nuevo, por favor.");
-    }
-    setPendingChatAction(message.chat.id, { kind: "report_source", draft: { ...pending.draft, location: text } });
-    return sendMessage(message.chat.id, "Si tienes un enlace/fuente, envíalo ahora. Si no tienes, escribe <b>omitir</b>.");
-  }
-
-  if (pending.kind === "report_source") {
-    const sourceUrl = /^omitir$/i.test(text) ? null : normalizeOptionalSourceUrl(text);
-    if (!sourceUrl && !/^omitir$/i.test(text)) {
-      setPendingChatAction(message.chat.id, { kind: "report_source", draft: pending.draft });
-      return sendMessage(message.chat.id, "No pude leer ese enlace. Envía un link http(s) o escribe <b>omitir</b>.");
-    }
-    const draft = { ...pending.draft, sourceUrl } as ReportDraft;
-    setPendingChatAction(message.chat.id, { kind: "report_confirm", draft });
-    return sendMessage(message.chat.id, `Confirma el reporte:
-
-<b>Nombre:</b> ${escapeHtml(draft.fullName)}
-<b>Ubicación:</b> ${escapeHtml(draft.location)}
-<b>Fuente:</b> ${draft.sourceUrl ? `<a href="${escapeHtmlAttribute(draft.sourceUrl)}">abrir enlace</a>` : "sin enlace"}
-
-Responde <b>sí</b> para publicar o <b>no</b> para cancelar.`);
-  }
-
-  if (pending.kind === "report_confirm") {
-    if (!/^s[ií]$/i.test(text)) return cancelPendingAction(message.chat.id);
-    pendingChatActions.delete(message.chat.id);
-    return submitReport(message, pending.draft);
-  }
-}
-
-function parseReportPayload(payload: string): ReportDraft {
-  const [fullName, location, submittedSourceUrl] = payload.split("|").map((part) => part.trim());
-  return { fullName, location, sourceUrl: normalizeOptionalSourceUrl(submittedSourceUrl) };
-}
-
-async function submitReport(message: NonNullable<TelegramUpdate["message"]>, draft: Partial<ReportDraft>) {
-  const { fullName, location } = draft;
-  if (!fullName || !location || fullName.length < 4 || location.length < 2) {
-    setPendingChatAction(message.chat.id, { kind: "report_name", draft: {} });
-    return sendMessage(message.chat.id, "No pude leer el reporte. Empecemos de nuevo: ¿cuál es el nombre y apellido?");
-  }
-
-  const sourceUrl = draft.sourceUrl ?? fallbackReportSourceUrl(message);
-  const person = await createCitizenReport({
-    fullName,
-    location,
-    sourceUrl,
-    submittedSourceUrl: draft.sourceUrl ?? null,
-    reporter: reporterRaw(message),
-    messageId: message.message_id,
-    chatId: message.chat.id,
-  });
-  await incrementMetric("telegram_report");
-  capture(telegramEvent("citizen_report_created", message.chat.id), telegramDistinctId(message.chat.id, message.from), {
-    hasSourceUrl: Boolean(draft.sourceUrl),
-    sourceKind: draft.sourceUrl ? "user_url" : "fallback",
-    locationLengthBucket: lengthBucket(location.length),
-  });
-
-  await notifyAdmin(`🆕 <b>Reporte ciudadano insertado</b>
-
-${formatReporter(message)}
-
-${formatAdminPerson(person)}`, adminActionButtons(person.id));
-
-  return sendMessage(message.chat.id, `Gracias. Agregué el reporte de <b>${escapeHtml(fullName)}</b> a la lista.\n\nSi luego detectas un error, puedes escribir /sugerencia.`);
-}
 
 async function sendPeoplePage(chatId: number, page: number, messageId?: number, user?: TelegramUser) {
   const result = await listPublicPeople(page, 5);
@@ -559,29 +411,6 @@ async function sendSearchResults(chatId: number, query: string, message?: NonNul
   return sendMessage(chatId, text, [[button("🔎 Buscar", "search"), button("📋 Lista", "list:1")]]);
 }
 
-function normalizeOptionalSourceUrl(value: string | undefined) {
-  if (!value) return null;
-  try {
-    const url = new URL(value);
-    if (url.protocol !== "http:" && url.protocol !== "https:") return null;
-    return url.toString();
-  } catch {
-    return null;
-  }
-}
-
-function fallbackReportSourceUrl(message: NonNullable<TelegramUpdate["message"]>) {
-  return `https://t.me/encontrados_ve_bot?start=report_${message.chat.id}_${message.message_id}`;
-}
-
-function reporterRaw(message: NonNullable<TelegramUpdate["message"]>) {
-  return {
-    id: message.from?.id ?? null,
-    username: message.from?.username ?? null,
-    firstName: message.from?.first_name ?? null,
-    lastName: message.from?.last_name ?? null,
-  };
-}
 
 function formatReporter(message: NonNullable<TelegramUpdate["message"]>) {
   const user = message.from;
@@ -595,26 +424,6 @@ export async function notifyAdmin(text: string, inlineKeyboard?: InlineButton[][
   await sendMessage(env.adminChatId, text, inlineKeyboard);
 }
 
-export function adminActionButtons(personId: string): InlineButton[][] {
-  const shortId = rememberPersonId(personId);
-  return [[
-    button("✅ Verificar", `adm:verify:${shortId}`),
-    button("⚠️ Revisar", `adm:review:${shortId}`),
-    button("🙈 Ocultar", `adm:hide:${shortId}`),
-  ]];
-}
-
-function statusLabel(status: RecordStatus) {
-  return status === "verified" ? "verificado" : status === "citizen_report" ? "reporte ciudadano" : status === "needs_review" ? "por revisar" : "oculto";
-}
-
-function statusEmoji(status: RecordStatus) {
-  return status === "verified" ? "✅" : status === "citizen_report" ? "🧾" : status === "needs_review" ? "⚠️" : "🙈";
-}
-
-function parseStatus(value: string | undefined): RecordStatus | null {
-  return value === "verified" || value === "citizen_report" || value === "needs_review" || value === "removed" ? value : null;
-}
 
 function formatMetrics(metrics: Record<string, number>) {
   const entries = Object.entries(metrics);
@@ -629,7 +438,7 @@ function formatAdminPeopleList(items: FoundPerson[], title: string) {
 
 export function formatAdminPerson(person: FoundPerson) {
   return [
-    `<b>${escapeHtml(person.fullName)}</b> ${statusEmoji(person.status)}`,
+    `<b>${escapeHtml(person.fullName)}</b>`,
     `ID: <code>${escapeHtml(rememberPersonId(person.id))}</code>`,
     person.relevantInfo ? escapeHtml(truncate(person.relevantInfo, 180)) : null,
     `<a href="${escapeHtmlAttribute(person.sourceUrl)}">Ver fuente</a>`,

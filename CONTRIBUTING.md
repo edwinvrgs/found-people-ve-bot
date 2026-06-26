@@ -68,7 +68,6 @@ A good PR should include:
 - Public responses must not expose full document IDs unnecessarily.
 - Prefer source-linked records over copied free-form personal details.
 - Keep ingestion logs aggregate or operational; avoid logging sensitive payloads.
-- Treat citizen reports as unverified until reviewed.
 - Be careful with minors, medical details, and OCR-derived data.
 
 ## Code style

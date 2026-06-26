@@ -1,13 +1,10 @@
 import { prisma } from "./prisma.js";
 
-export type RecordStatus = "verified" | "citizen_report" | "needs_review" | "removed";
-
 export type FoundPerson = {
   id: string;
   fullName: string;
   relevantInfo: string | null;
   sourceUrl: string;
-  status: RecordStatus;
 };
 
 export type FoundPersonExternal = FoundPerson & { documentId: string | null };
@@ -31,11 +28,9 @@ export {
   incrementMetric,
   listPeople,
   listPeopleExternal,
-  listRecentCitizenReports,
   searchPeople,
   searchPeopleByDocument,
   searchPeopleByName,
   searchPeopleExternal,
-  updatePersonStatus,
   upsertPeople,
 } from "./repositories/found-people-repository.js";

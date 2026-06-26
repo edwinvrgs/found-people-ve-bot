@@ -8,7 +8,6 @@ const baseExisting = {
   relevantInfo: "Hospital A",
   sourceUrl: "https://example.com/original",
   sourceHash: "hash-original",
-  status: "verified" as const,
   documentId: null,
   raw: { provider: "original" },
 };
@@ -18,7 +17,6 @@ const baseIncoming: UpsertPersonInput = {
   relevantInfo: "Hospital A, piso 2, estable",
   sourceUrl: "https://example.com/new-source",
   sourceHash: "hash-new",
-  status: "verified",
   documentId: "12345678",
   raw: { provider: "new" },
 };
@@ -34,7 +32,6 @@ describe("ingest enrichment", () => {
   it("fills missing document IDs on same-source matches", () => {
     const enriched = enrichExistingPerson(baseExisting, baseIncoming, {
       hash: "hash-original",
-      status: "verified",
       documentId: "12345678",
     });
 
@@ -46,7 +43,6 @@ describe("ingest enrichment", () => {
   it("keeps the more informative name/info on document matches without replacing the primary source URL", () => {
     const enriched = enrichExistingPerson({ ...baseExisting, documentId: "12345678" }, baseIncoming, {
       hash: "hash-new",
-      status: "verified",
       documentId: "12345678",
     });
 
@@ -57,30 +53,9 @@ describe("ingest enrichment", () => {
     assert.equal((enriched.raw.ingestionSources as Array<Record<string, unknown>>)[0]?.matchedBy, "document_id");
   });
 
-  it("does not revive removed records", () => {
-    const enriched = enrichExistingPerson({ ...baseExisting, status: "removed" }, baseIncoming, {
-      hash: "hash-original",
-      status: "verified",
-      documentId: "12345678",
-    });
-
-    assert.equal(enriched.status, "removed");
-  });
-
-  it("does not downgrade verified records", () => {
-    const enriched = enrichExistingPerson(baseExisting, { ...baseIncoming, status: "needs_review" }, {
-      hash: "hash-original",
-      status: "needs_review",
-      documentId: "12345678",
-    });
-
-    assert.equal(enriched.status, "verified");
-  });
-
   it("tracks repeated ingestion sources in raw metadata", () => {
     const enriched = enrichExistingPerson({ ...baseExisting, documentId: "12345678" }, baseIncoming, {
       hash: "hash-new",
-      status: "verified",
       documentId: "12345678",
     });
 
@@ -93,7 +68,6 @@ describe("ingest enrichment", () => {
   it("keeps URL matches idempotent", () => {
     const sameUrl = enrichExistingPerson(baseExisting, { ...baseIncoming, sourceUrl: baseExisting.sourceUrl }, {
       hash: "hash-new",
-      status: "verified",
       documentId: null,
     });
 
