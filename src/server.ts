@@ -1,5 +1,5 @@
 import { createHash, timingSafeEqual } from "node:crypto";
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import { z } from "zod";
 import { deletePersonById, deletePersonBySourceUrl, ensureSchema, getFoundPeopleStats, getPersonById, incrementMetric, listPeople, listPeopleExternal, listRecentCitizenReports, searchPeople, searchPeopleByDocument, searchPeopleByName, searchPeopleExternal, updatePersonStatus, upsertPeople, type FoundPerson, type RecordStatus } from "./db.js";
 import { analyticsEnabled, capture, captureSystem, hashIdentifier, identify, shutdownAnalytics } from "./analytics.js";
@@ -136,170 +136,156 @@ const PENDING_ACTION_TTL_MS = 15 * 60_000;
 await ensureSchema();
 setInterval(sweepRateLimitBuckets, 60_000).unref();
 
-const server = createServer(async (request, response) => {
-  try {
-    response.setHeader("x-content-type-options", "nosniff");
-    response.setHeader("cache-control", "no-store");
-
-    const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "localhost"}`);
-    const clientKey = clientIp(request);
-
-    if (request.method === "GET" && url.pathname === "/health") {
-      return json(response, 200, { ok: true, analytics: analyticsEnabled() ? "configured" : "disabled" });
-    }
-
-    if (request.method === "GET" && url.pathname === "/api/people") {
-      const limited = applyRateLimit(response, `public:${clientKey}`, PUBLIC_API_LIMIT.count, PUBLIC_API_LIMIT.windowMs);
-      if (limited) return;
-
-      const parsed = PeopleQuerySchema.safeParse(Object.fromEntries(url.searchParams));
-      if (!parsed.success) return json(response, 400, { error: "Invalid pagination" });
-      return json(response, 200, await listPeople(parsed.data.page, parsed.data.pageSize));
-    }
-
-    if (request.method === "GET" && url.pathname === "/api/search") {
-      const limited = applyRateLimit(response, `public:${clientKey}`, PUBLIC_API_LIMIT.count, PUBLIC_API_LIMIT.windowMs);
-      if (limited) return;
-
-      const parsed = SearchQuerySchema.safeParse(Object.fromEntries(url.searchParams));
-      if (!parsed.success) return json(response, 400, { error: "Invalid search" });
-      const result = await searchPeople(parsed.data.name, parsed.data.page, parsed.data.pageSize);
-      captureSearchMatched({
-        surface: "public_api",
-        total: result.total,
-        resultCount: result.items.length,
-        page: parsed.data.page,
-        pageSize: parsed.data.pageSize,
-        query: parsed.data.name,
-        distinctId: hashIdentifier(clientKey) ?? "public_api_unknown",
-      });
-      return json(response, 200, result);
-    }
-
-    if (request.method === "GET" && url.pathname === "/api/v1/found-people") {
-      const limited = applyRateLimit(response, `external-list:${clientKey}`, PUBLIC_API_LIMIT.count, PUBLIC_API_LIMIT.windowMs);
-      if (limited) return;
-
-      const parsed = ExternalListQuerySchema.safeParse(Object.fromEntries(url.searchParams));
-      if (!parsed.success) return json(response, 400, { error: "Invalid pagination" });
-
-      const { page, pageSize, q, name, documentId } = parsed.data;
-      const result = documentId
-        ? await searchPeopleByDocument(documentId, page, pageSize)
-        : name
-          ? await searchPeopleByName(name, page, pageSize)
-          : q
-            ? await searchPeopleExternal(q, page, pageSize)
-            : await listPeopleExternal(page, pageSize);
-      await incrementMetric("external_api_list");
-      captureSystem("external_api_list_requested", {
-        page,
-        pageSize,
-        total: result.total,
-        clientId: hashIdentifier(clientKey),
-        ...(documentId
-          ? { queryType: "document", queryLengthBucket: lengthBucket(documentId.length) }
-          : name
-            ? { queryType: "name", queryLengthBucket: lengthBucket(name.length) }
-            : q
-              ? { queryType: "full_search", queryLengthBucket: lengthBucket(q.length) }
-              : {}),
-      });
-      return json(response, 200, {
-        data: result.items,
-        pagination: {
-          page: result.page,
-          pageSize: result.pageSize,
-          total: result.total,
-          totalPages: result.totalPages,
-        },
-      });
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/v1/found-people/reports") {
-      const limited = applyRateLimit(response, `external-report:${clientKey}`, EXTERNAL_REPORT_API_LIMIT.count, EXTERNAL_REPORT_API_LIMIT.windowMs);
-      if (limited) return;
-
-      const authError = validateBearerSecure(request.headers.authorization, env.externalApiSecret, "EXTERNAL_API_SECRET");
-      if (authError) return json(response, authError.status, { error: authError.message });
-
-      const authLimited = applyRateLimit(response, `external-report-auth:${clientKey}:${hashForRateLimit(request.headers.authorization ?? "")}`, EXTERNAL_REPORT_API_LIMIT.count, EXTERNAL_REPORT_API_LIMIT.windowMs);
-      if (authLimited) return;
-
-      if (!isJsonRequest(request)) return json(response, 415, { error: "Content-Type must be application/json" });
-
-      const parsed = ExternalReportSchema.safeParse(await readJson(request, MAX_JSON_BODY_BYTES));
-      if (!parsed.success) return json(response, 400, { error: "Invalid report payload" });
-
-      const report = await createExternalReport(parsed.data, request.headers["idempotency-key"]);
-      await incrementMetric("external_api_report");
-      captureSystem("external_report_created", {
-        hasSourceUrl: Boolean(parsed.data.sourceUrl),
-        hasNotes: Boolean(parsed.data.notes),
-        hasReporter: Boolean(parsed.data.reporter),
-        hasReporterService: Boolean(parsed.data.reporter?.service),
-        idempotencyKeyPresent: typeof request.headers["idempotency-key"] === "string",
-        clientId: hashIdentifier(clientKey),
-      });
-      await notifyAdmin(`🆕 <b>Reporte externo insertado</b>
-
-${formatAdminPerson(report)}`, adminActionButtons(report.id));
-      return json(response, 201, { data: report });
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/ingest") {
-      const limited = applyRateLimit(response, `admin:${clientKey}`, ADMIN_API_LIMIT.count, ADMIN_API_LIMIT.windowMs);
-      if (limited) return;
-
-      const authError = validateBearer(request.headers.authorization, env.ingestSecret);
-      if (authError) return json(response, authError.status, { error: authError.message });
-
-      const parsed = IngestSchema.safeParse(await readJson(request, MAX_JSON_BODY_BYTES));
-      if (!parsed.success) return json(response, 400, { error: "Invalid ingest payload" });
-
-      const rows = await upsertPeople(parsed.data.people);
-      return json(response, 200, { upserted: rows.length, people: rows });
-    }
-
-    if (request.method === "DELETE" && url.pathname === "/api/people") {
-      const limited = applyRateLimit(response, `admin:${clientKey}`, ADMIN_API_LIMIT.count, ADMIN_API_LIMIT.windowMs);
-      if (limited) return;
-
-      const authError = validateBearer(request.headers.authorization, env.ingestSecret);
-      if (authError) return json(response, authError.status, { error: authError.message });
-
-      const parsed = DeletePersonSchema.safeParse(await readJson(request, MAX_JSON_BODY_BYTES));
-      if (!parsed.success) return json(response, 400, { error: "Invalid delete payload" });
-
-      const rows = await deletePersonBySourceUrl(parsed.data.sourceUrl);
-      return json(response, 200, { deleted: rows.length, people: rows });
-    }
-
-    if (request.method === "POST" && url.pathname === "/telegram/webhook") {
-      const secretError = validateTelegramSecret(request.headers["x-telegram-bot-api-secret-token"]);
-      if (secretError) return json(response, 401, { error: secretError });
-
-      const update = TelegramUpdateSchema.parse(await readJson(request, MAX_JSON_BODY_BYTES));
-      await handleTelegramUpdate(update);
-      return json(response, 200, { ok: true });
-    }
-
-    return json(response, 404, { error: "Not found" });
-  } catch (error) {
-    if (error instanceof RequestBodyTooLargeError) return json(response, 413, { error: "Request body too large" });
-    if (error instanceof InvalidJsonError) return json(response, 400, { error: "Invalid JSON" });
-    logger.error({ event: "request_failed", ...errorDetails(error) }, "Unhandled request error");
-    return json(response, 500, { error: "Internal error" });
-  }
+const server = fastify({
+  bodyLimit: MAX_JSON_BODY_BYTES,
+  exposeHeadRoutes: false,
+  logger: false,
+  requestTimeout: 15_000,
+  trustProxy: true,
 });
 
-server.requestTimeout = 15_000;
-server.headersTimeout = 16_000;
-server.keepAliveTimeout = 5_000;
-
-server.listen(env.port, () => {
-  logger.info({ event: "server_started", port: env.port }, `found-people-ve-bot listening on :${env.port}`);
+server.server.headersTimeout = 16_000;
+server.server.keepAliveTimeout = 5_000;
+server.removeAllContentTypeParsers();
+server.addContentTypeParser("*", { parseAs: "buffer", bodyLimit: MAX_JSON_BODY_BYTES }, (_request, body, done) => {
+  done(null, body);
 });
+
+server.addHook("onRequest", async (_request, reply) => {
+  reply.header("x-content-type-options", "nosniff");
+  reply.header("cache-control", "no-store");
+});
+
+server.setErrorHandler((error, _request, reply) => {
+  const code = typeof error === "object" && error && "code" in error ? String(error.code) : null;
+  if (error instanceof RequestBodyTooLargeError || code === "FST_ERR_CTP_BODY_TOO_LARGE") return json(reply, 413, { error: "Request body too large" });
+  if (error instanceof InvalidJsonError || code === "FST_ERR_CTP_INVALID_JSON_BODY") return json(reply, 400, { error: "Invalid JSON" });
+  logger.error({ event: "request_failed", ...errorDetails(error) }, "Unhandled request error");
+  return json(reply, 500, { error: "Internal error" });
+});
+
+server.get("/health", async (_request, reply) => {
+  return json(reply, 200, { ok: true, analytics: analyticsEnabled() ? "configured" : "disabled" });
+});
+
+server.get("/api/people", async (request, reply) => {
+  const clientKey = clientIp(request);
+  const limited = applyRateLimit(reply, `public:${clientKey}`, PUBLIC_API_LIMIT.count, PUBLIC_API_LIMIT.windowMs);
+  if (limited) return;
+
+  const parsed = PeopleQuerySchema.safeParse(queryParams(request));
+  if (!parsed.success) return json(reply, 400, { error: "Invalid pagination" });
+  return json(reply, 200, await listPeople(parsed.data.page, parsed.data.pageSize));
+});
+
+server.get("/api/search", async (request, reply) => {
+  const clientKey = clientIp(request);
+  const limited = applyRateLimit(reply, `public:${clientKey}`, PUBLIC_API_LIMIT.count, PUBLIC_API_LIMIT.windowMs);
+  if (limited) return;
+
+  const parsed = SearchQuerySchema.safeParse(queryParams(request));
+  if (!parsed.success) return json(reply, 400, { error: "Invalid search" });
+  const result = await searchPeople(parsed.data.name, parsed.data.page, parsed.data.pageSize);
+  captureSearchMatched({
+    surface: "public_api",
+    total: result.total,
+    resultCount: result.items.length,
+    page: parsed.data.page,
+    pageSize: parsed.data.pageSize,
+    query: parsed.data.name,
+    distinctId: hashIdentifier(clientKey) ?? "public_api_unknown",
+  });
+  return json(reply, 200, result);
+});
+
+server.get("/api/v1/found-people", async (request, reply) => {
+  const clientKey = clientIp(request);
+  const limited = applyRateLimit(reply, `external-list:${clientKey}`, PUBLIC_API_LIMIT.count, PUBLIC_API_LIMIT.windowMs);
+  if (limited) return;
+
+  const parsed = ExternalListQuerySchema.safeParse(queryParams(request));
+  if (!parsed.success) return json(reply, 400, { error: "Invalid pagination" });
+
+  const { page, pageSize, q, name, documentId } = parsed.data;
+  const result = documentId
+    ? await searchPeopleByDocument(documentId, page, pageSize)
+    : name
+      ? await searchPeopleByName(name, page, pageSize)
+      : q
+        ? await searchPeopleExternal(q, page, pageSize)
+        : await listPeopleExternal(page, pageSize);
+  await incrementMetric("external_api_list");
+  captureSystem("external_api_list_requested", {
+    page,
+    pageSize,
+    total: result.total,
+    clientId: hashIdentifier(clientKey),
+    ...(documentId
+      ? { queryType: "document", queryLengthBucket: lengthBucket(documentId.length) }
+      : name
+        ? { queryType: "name", queryLengthBucket: lengthBucket(name.length) }
+        : q
+          ? { queryType: "full_search", queryLengthBucket: lengthBucket(q.length) }
+          : {}),
+  });
+  return json(reply, 200, {
+    data: result.items,
+    pagination: {
+      page: result.page,
+      pageSize: result.pageSize,
+      total: result.total,
+      totalPages: result.totalPages,
+    },
+  });
+});
+
+server.post("/api/v1/found-people/reports", { onRequest: guardExternalReportRequest }, async (request, reply) => {
+  const clientKey = clientIp(request);
+  if (!isJsonRequest(request)) return json(reply, 415, { error: "Content-Type must be application/json" });
+
+  const parsed = ExternalReportSchema.safeParse(await readJson(request));
+  if (!parsed.success) return json(reply, 400, { error: "Invalid report payload" });
+
+  const report = await createExternalReport(parsed.data, request.headers["idempotency-key"]);
+  await incrementMetric("external_api_report");
+  captureSystem("external_report_created", {
+    hasSourceUrl: Boolean(parsed.data.sourceUrl),
+    hasNotes: Boolean(parsed.data.notes),
+    hasReporter: Boolean(parsed.data.reporter),
+    hasReporterService: Boolean(parsed.data.reporter?.service),
+    idempotencyKeyPresent: typeof request.headers["idempotency-key"] === "string",
+    clientId: hashIdentifier(clientKey),
+  });
+  await notifyAdmin(`🆕 <b>Reporte externo insertado</b>\n\n${formatAdminPerson(report)}`, adminActionButtons(report.id));
+  return json(reply, 201, { data: report });
+});
+
+server.post("/api/ingest", { onRequest: guardAdminRequest }, async (request, reply) => {
+  const parsed = IngestSchema.safeParse(await readJson(request));
+  if (!parsed.success) return json(reply, 400, { error: "Invalid ingest payload" });
+
+  const rows = await upsertPeople(parsed.data.people);
+  return json(reply, 200, { upserted: rows.length, people: rows });
+});
+
+server.delete("/api/people", { onRequest: guardAdminRequest }, async (request, reply) => {
+  const parsed = DeletePersonSchema.safeParse(await readJson(request));
+  if (!parsed.success) return json(reply, 400, { error: "Invalid delete payload" });
+
+  const rows = await deletePersonBySourceUrl(parsed.data.sourceUrl);
+  return json(reply, 200, { deleted: rows.length, people: rows });
+});
+
+server.post("/telegram/webhook", { onRequest: guardTelegramWebhookRequest }, async (request, reply) => {
+  const update = TelegramUpdateSchema.parse(await readJson(request));
+  await handleTelegramUpdate(update);
+  return json(reply, 200, { ok: true });
+});
+
+server.setNotFoundHandler((_request, reply) => json(reply, 404, { error: "Not found" }));
+
+await server.listen({ port: env.port, host: "0.0.0.0" });
+logger.info({ event: "server_started", port: env.port }, `found-people-ve-bot listening on :${env.port}`);
 
 const TelegramUpdateSchema = z.object({
   message: z.object({
@@ -353,7 +339,36 @@ function timingSafeEqualString(actual: string, expected: string) {
   return actualBuffer.length === expectedBuffer.length && timingSafeEqual(actualBuffer, expectedBuffer);
 }
 
-function isJsonRequest(request: IncomingMessage) {
+function guardAdminRequest(request: FastifyRequest, reply: FastifyReply) {
+  const clientKey = clientIp(request);
+  const limited = applyRateLimit(reply, `admin:${clientKey}`, ADMIN_API_LIMIT.count, ADMIN_API_LIMIT.windowMs);
+  if (limited) return;
+
+  const authError = validateBearer(request.headers.authorization, env.ingestSecret);
+  if (authError) void json(reply, authError.status, { error: authError.message });
+}
+
+function guardExternalReportRequest(request: FastifyRequest, reply: FastifyReply) {
+  const clientKey = clientIp(request);
+  const limited = applyRateLimit(reply, `external-report:${clientKey}`, EXTERNAL_REPORT_API_LIMIT.count, EXTERNAL_REPORT_API_LIMIT.windowMs);
+  if (limited) return;
+
+  const authError = validateBearerSecure(request.headers.authorization, env.externalApiSecret, "EXTERNAL_API_SECRET");
+  if (authError) {
+    void json(reply, authError.status, { error: authError.message });
+    return;
+  }
+
+  const authLimited = applyRateLimit(reply, `external-report-auth:${clientKey}:${hashForRateLimit(request.headers.authorization ?? "")}`, EXTERNAL_REPORT_API_LIMIT.count, EXTERNAL_REPORT_API_LIMIT.windowMs);
+  if (authLimited) return;
+}
+
+function guardTelegramWebhookRequest(request: FastifyRequest, reply: FastifyReply) {
+  const secretError = validateTelegramSecret(request.headers["x-telegram-bot-api-secret-token"]);
+  if (secretError) void json(reply, 401, { error: secretError });
+}
+
+function isJsonRequest(request: FastifyRequest) {
   const contentType = request.headers["content-type"];
   return typeof contentType === "string" && contentType.toLowerCase().split(";")[0].trim() === "application/json";
 }
@@ -1119,37 +1134,46 @@ process.once("SIGINT", () => {
   void shutdownAnalytics().finally(() => process.exit(0));
 });
 
-async function readJson(request: IncomingMessage, maxBytes: number) {
-  const chunks: Buffer[] = [];
-  let size = 0;
-  for await (const chunk of request) {
-    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    size += buffer.byteLength;
-    if (size > maxBytes) throw new RequestBodyTooLargeError("Request body too large");
-    chunks.push(buffer);
-  }
-  try {
-    return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
-  } catch {
-    throw new InvalidJsonError("Invalid JSON");
-  }
+function queryParams(request: FastifyRequest) {
+  const url = new URL(request.url, `http://${request.headers.host ?? "localhost"}`);
+  return Object.fromEntries(url.searchParams);
 }
 
-function applyRateLimit(response: ServerResponse, key: string, limit: number, windowMs: number) {
+async function readJson(request: FastifyRequest) {
+  const body = request.body;
+  if (body == null) return {};
+  if (Buffer.isBuffer(body)) {
+    try {
+      return JSON.parse(body.toString("utf8") || "{}");
+    } catch {
+      throw new InvalidJsonError("Invalid JSON");
+    }
+  }
+  if (typeof body === "string") {
+    try {
+      return JSON.parse(body || "{}");
+    } catch {
+      throw new InvalidJsonError("Invalid JSON");
+    }
+  }
+  return body;
+}
+
+function applyRateLimit(reply: FastifyReply, key: string, limit: number, windowMs: number) {
   const limited = rateLimit(key, limit, windowMs);
   if (limited.allowed) return false;
-  response.setHeader("retry-after", String(limited.retryAfterSeconds));
-  json(response, 429, { error: "Too many requests", retryAfterSeconds: limited.retryAfterSeconds });
+  reply.header("retry-after", String(limited.retryAfterSeconds));
+  json(reply, 429, { error: "Too many requests", retryAfterSeconds: limited.retryAfterSeconds });
   return true;
 }
 
-function clientIp(request: IncomingMessage) {
+function clientIp(request: FastifyRequest) {
   const forwarded = request.headers["x-forwarded-for"];
   if (typeof forwarded === "string" && forwarded) return forwarded.split(",")[0].trim();
-  return request.socket.remoteAddress ?? "unknown";
+  if (Array.isArray(forwarded) && forwarded[0]) return forwarded[0].split(",")[0].trim();
+  return request.ip ?? "unknown";
 }
 
-function json(response: ServerResponse, status: number, body: unknown) {
-  response.writeHead(status, { "content-type": "application/json; charset=utf-8" });
-  response.end(JSON.stringify(body));
+function json(reply: FastifyReply, status: number, body: unknown) {
+  return reply.type("application/json; charset=utf-8").status(status).send(body);
 }
