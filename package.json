@@ -11,7 +11,10 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "db:validate": "prisma validate",
     "db:generate": "prisma generate",
-    "db:migrate": "prisma migrate deploy"
+    "db:migrate": "prisma migrate deploy",
+    "test": "tsx --test \"src/**/*.test.ts\"",
+    "test:smoke": "npm run test",
+    "security:audit": "npm audit --omit=dev"
   },
   "dependencies": {
     "@prisma/client": "^6.19.3",
