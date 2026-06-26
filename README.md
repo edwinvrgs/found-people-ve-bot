@@ -63,7 +63,6 @@ The backend is intentionally still small and dependency-light. See [`docs/archit
 
 ```txt
 GET    /health
-GET    /api/search?name=Maria&page=1&pageSize=5
 GET    /api/people?page=1&pageSize=5
 GET    /api/v1/found-people?page=1&pageSize=10&q=Maria
 POST   /api/v1/found-people/reports
@@ -72,7 +71,7 @@ DELETE /api/people
 POST   /telegram/webhook
 ```
 
-Prefer `/api/v1/found-people` for external consumers. Older endpoints remain available for compatibility and internal workflows.
+Use `/api/v1/found-people` for external consumers and all search integrations. `/api/people` remains available for compatibility and internal listing workflows.
 
 ## External API v1
 
@@ -370,7 +369,7 @@ The bot can send server-side events to PostHog when `POSTHOG_API_KEY` is configu
 
 Privacy principles:
 
-- Telegram/public `/api/search` query text, locations, notes, URLs, tokens, and raw IDs are not sent.
+- Telegram search text, API search metadata, locations, notes, URLs, tokens, and raw IDs are not sent.
 - External list `q` is normalized, length-limited, character-restricted, and then sent only as validated search metadata.
 - If Telegram provides a `username`, it is used as a readable `distinctId` (`telegram:@username`) and as the `telegramUsername` property in PostHog.
 - If Telegram does not provide a `username`, the Telegram ID is hashed with `ANALYTICS_HASH_SALT` or `TELEGRAM_WEBHOOK_SECRET`.
@@ -384,7 +383,7 @@ Telegram events:
 - `message_received`: message received by the bot. Does not include message text.
 - `telegram_command`: command used (`ayuda`, `buscar`, `lista`, `reportar`, etc.; admin commands keep English names).
 - `search_performed`: Telegram search executed; includes length bucket, query type (`name`/`document`), and result count. Does not include the search text or ID number.
-- `search_matched`: search returned at least one match; emitted for Telegram and public API searches. Includes surface, length bucket, query type, pagination, and counts. Does not include the search text, ID number, names, or source URLs.
+- `search_matched`: Telegram search returned at least one match. Includes surface, length bucket, query type, pagination, and counts. Does not include the search text, ID number, names, or source URLs.
 - `list_viewed`: list viewed; includes page and counts.
 - `citizen_report_created`: citizen report created from Telegram; only flags/buckets, no name, location, or source.
 - `feedback_submitted`: feedback sent; only length bucket, not the content.
@@ -393,8 +392,7 @@ Telegram events:
 External API / ingestion events:
 
 - `found_people_scrape_completed`: internal scraper finished; includes aggregate totals, per-source counts, document-ID counts, duration, dry-run/write flag, and provider error counts. Does not include names, cédulas, URLs, raw records, or secrets.
-- `search_matched`: public `/api/search` returned at least one match; uses a hashed client identifier and contains no query text or raw ID.
-- `external_api_list_requested`: `GET /api/v1/found-people` usage; includes pagination/counts, hashed client ID, and validated `q` plus length bucket when present.
+- `external_api_list_requested`: `GET /api/v1/found-people` usage; includes pagination/counts, hashed client ID, and query type plus length bucket when present.
 - `external_report_created`: report created through `POST /api/v1/found-people/reports`; only flags and hashed client ID.
 
 Events outside the taxonomy:
