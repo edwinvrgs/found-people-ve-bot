@@ -23,12 +23,13 @@ describe("Telegram analytics identity", () => {
     assert.match(telegramDistinctId(999), /^telegram_chat:[a-f0-9]{32}$/);
   });
 
-  it("keeps usernames out of PostHog properties", () => {
+  it("keeps the username as a property without using it as the distinct ID", () => {
     const properties = telegramAnalyticsProperties(999, { id: 123, username: "Edwin" });
 
     assert.equal(properties.telegramHasUsername, true);
+    assert.equal(properties.telegramUsername, "@edwin");
     assert.match(properties.telegramUsernameHash ?? "", /^[a-f0-9]{32}$/);
-    assert.equal(Object.values(properties).includes("@edwin"), false);
+    assert.notEqual(telegramDistinctId(999, { id: 123, username: "Edwin" }), "telegram:@edwin");
   });
 
   it("can address the previous username-based distinct ID for PostHog aliasing", () => {
