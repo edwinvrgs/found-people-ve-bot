@@ -75,6 +75,25 @@ export async function upsertPeople(people: UpsertPersonInput[]) {
     const hash = person.sourceHash ?? await sha256(`${person.sourceUrl}:${person.fullName}`);
     const status = person.status ?? "verified";
     const documentId = normalizeDocumentId(person.documentId);
+    const existing = await findExistingIngestMatch(hash, documentId, person.sourceUrl);
+
+    if (existing) {
+      const enriched = enrichExistingPerson(existing, person, { hash, status, documentId });
+      const [row] = await prisma.$queryRaw<FoundPerson[]>`
+        UPDATE found_people SET
+          full_name = ${enriched.fullName},
+          relevant_info = ${enriched.relevantInfo},
+          document_id = ${enriched.documentId},
+          source_url = ${enriched.sourceUrl},
+          status = ${enriched.status},
+          raw = ${JSON.stringify(enriched.raw)}::jsonb,
+          updated_at = now()
+        WHERE id = ${existing.id}::uuid
+        RETURNING ${selectColumnsSql()}`;
+      rows.push(row);
+      continue;
+    }
+
     const [row] = await prisma.$queryRaw<FoundPerson[]>`
       INSERT INTO found_people (full_name, relevant_info, document_id, source_url, source_hash, status, raw)
       VALUES (${person.fullName}, ${person.relevantInfo ?? null}, ${documentId}, ${person.sourceUrl}, ${hash}, ${status}, ${JSON.stringify(person.raw ?? {})}::jsonb)
@@ -91,6 +110,117 @@ export async function upsertPeople(people: UpsertPersonInput[]) {
   }
 
   return rows;
+}
+
+type ExistingIngestPerson = FoundPerson & {
+  documentId: string | null;
+  sourceHash: string;
+  raw: Prisma.JsonValue;
+};
+
+type IngestMatchInput = {
+  hash: string;
+  status: RecordStatus;
+  documentId: string | null;
+};
+
+type EnrichedPerson = {
+  fullName: string;
+  relevantInfo: string | null;
+  documentId: string | null;
+  sourceUrl: string;
+  status: RecordStatus;
+  raw: Record<string, unknown>;
+};
+
+async function findExistingIngestMatch(sourceHash: string, documentId: string | null, sourceUrl: string) {
+  const matches = await prisma.$queryRaw<ExistingIngestPerson[]>`
+    SELECT ${selectColumnsSql()},
+           document_id AS "documentId",
+           source_hash AS "sourceHash",
+           raw AS "raw"
+    FROM found_people
+    WHERE source_hash = ${sourceHash}
+       OR (${documentId}::text IS NOT NULL AND document_id = ${documentId})
+       OR source_url = ${sourceUrl}
+    ORDER BY CASE
+      WHEN source_hash = ${sourceHash} THEN 1
+      WHEN ${documentId}::text IS NOT NULL AND document_id = ${documentId} THEN 2
+      WHEN source_url = ${sourceUrl} THEN 3
+      ELSE 4
+    END,
+    updated_at DESC
+    LIMIT 1`;
+  return matches[0] ?? null;
+}
+
+export function enrichExistingPerson(existing: ExistingIngestPerson, incoming: UpsertPersonInput, match: IngestMatchInput): EnrichedPerson {
+  const incomingInfo = incoming.relevantInfo ?? null;
+  const documentId = existing.documentId ?? match.documentId;
+  const sourceUrl = existing.sourceHash === match.hash || existing.sourceUrl === incoming.sourceUrl ? incoming.sourceUrl : existing.sourceUrl;
+
+  return {
+    fullName: chooseBetterName(existing.fullName, incoming.fullName),
+    relevantInfo: mergeRelevantInfo(existing.relevantInfo, incomingInfo),
+    documentId,
+    sourceUrl,
+    status: mergeStatus(existing.status, match.status),
+    raw: mergeIngestionRaw(existing.raw, incoming.raw ?? {}, {
+      sourceHash: match.hash,
+      sourceUrl: incoming.sourceUrl,
+      documentId: match.documentId,
+      matchedBy: existing.sourceHash === match.hash ? "source_hash" : existing.documentId && match.documentId && existing.documentId === match.documentId ? "document_id" : "source_url",
+    }),
+  };
+}
+
+function chooseBetterName(existing: string, incoming: string) {
+  const normalizedExisting = existing.replace(/\s+/g, " ").trim();
+  const normalizedIncoming = incoming.replace(/\s+/g, " ").trim();
+  if (!normalizedIncoming) return normalizedExisting;
+  if (!normalizedExisting) return normalizedIncoming;
+  return normalizedIncoming.length > normalizedExisting.length ? normalizedIncoming : normalizedExisting;
+}
+
+function mergeRelevantInfo(existing: string | null, incoming: string | null) {
+  const current = existing?.trim() || null;
+  const next = incoming?.trim() || null;
+  if (!current) return next;
+  if (!next) return current;
+  if (current.includes(next)) return current;
+  if (next.includes(current)) return next;
+  return next.length > current.length ? next : current;
+}
+
+function mergeStatus(existing: RecordStatus, incoming: RecordStatus): RecordStatus {
+  if (existing === "removed") return "removed";
+  if (existing === "verified") return "verified";
+  if (incoming === "verified") return "verified";
+  if (existing === "citizen_report") return "citizen_report";
+  return incoming;
+}
+
+function mergeIngestionRaw(existingRaw: Prisma.JsonValue, incomingRaw: Record<string, unknown>, source: { sourceHash: string; sourceUrl: string; documentId: string | null; matchedBy: string }) {
+  const existing: Record<string, unknown> = isRecord(existingRaw) ? existingRaw : {};
+  const previousSources: Record<string, unknown>[] = Array.isArray(existing.ingestionSources) ? existing.ingestionSources.filter(isRecord) : [];
+  const sourceEntry = {
+    sourceHash: source.sourceHash,
+    sourceUrl: source.sourceUrl,
+    documentId: source.documentId,
+    matchedBy: source.matchedBy,
+    lastSeenAt: new Date().toISOString(),
+  };
+  const dedupedSources = [sourceEntry, ...previousSources.filter((item) => item.sourceHash !== source.sourceHash)].slice(0, 20);
+
+  return {
+    ...existing,
+    latestIngestion: incomingRaw,
+    ingestionSources: dedupedSources,
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 export async function deletePersonBySourceUrl(sourceUrl: string) {
