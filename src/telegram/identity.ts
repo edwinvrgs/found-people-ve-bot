@@ -29,6 +29,5 @@ export function telegramAnalyticsProperties(chatId: number, user?: TelegramUser)
     userId: hashIdentifier(user?.id),
     telegramHasUsername: Boolean(normalizedUsername),
     telegramUsername: normalizedUsername,
-    telegramUsernameHash: hashIdentifier(normalizedUsername),
   };
 }

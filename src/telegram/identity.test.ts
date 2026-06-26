@@ -28,7 +28,7 @@ describe("Telegram analytics identity", () => {
 
     assert.equal(properties.telegramHasUsername, true);
     assert.equal(properties.telegramUsername, "@edwin");
-    assert.match(properties.telegramUsernameHash ?? "", /^[a-f0-9]{32}$/);
+    assert.equal("telegramUsernameHash" in properties, false);
     assert.notEqual(telegramDistinctId(999, { id: 123, username: "Edwin" }), "telegram:@edwin");
   });
 
