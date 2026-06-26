@@ -14,6 +14,8 @@ export type FoundPerson = {
   status: RecordStatus;
 };
 
+export type FoundPersonExternal = FoundPerson & { documentId: string | null };
+
 export type FoundPersonWithMetadata = FoundPerson & {
   createdAt: string;
   updatedAt: string;
@@ -321,11 +323,20 @@ function selectColumns() {
           status AS "status"`;
 }
 
+function selectColumnsExternal() {
+  return `id,
+          full_name AS "fullName",
+          relevant_info AS "relevantInfo",
+          source_url AS "sourceUrl",
+          status AS "status",
+          document_id AS "documentId"`;
+}
+
 function returningColumns() {
   return selectColumns();
 }
 
-function pageResult(items: FoundPerson[], page: number, pageSize: number, total: number) {
+function pageResult<T>(items: T[], page: number, pageSize: number, total: number) {
   return {
     items,
     page,
@@ -333,6 +344,88 @@ function pageResult(items: FoundPerson[], page: number, pageSize: number, total:
     total,
     totalPages: Math.max(1, Math.ceil(total / pageSize)),
   };
+}
+
+export async function listPeopleExternal(page: number, pageSize: number) {
+  const offset = (page - 1) * pageSize;
+  const [items, total] = await Promise.all([
+    pool.query<FoundPersonExternal>(
+      `SELECT ${selectColumnsExternal()} FROM found_people
+       WHERE ${PUBLIC_VISIBLE_STATUS_SQL}
+       ORDER BY lower(full_name) ASC, source_url ASC
+       LIMIT $1 OFFSET $2`,
+      [pageSize, offset],
+    ),
+    pool.query<{ count: string }>(`SELECT count(*) FROM found_people WHERE ${PUBLIC_VISIBLE_STATUS_SQL}`),
+  ]);
+  return pageResult(items.rows, page, pageSize, Number(total.rows[0]?.count ?? 0));
+}
+
+export async function searchPeopleExternal(search: string, page: number, pageSize: number) {
+  const offset = (page - 1) * pageSize;
+  const nameQuery = `%${search}%`;
+  const documentDigits = normalizeDocumentDigits(search);
+  const documentQuery = documentDigits ? `%${documentDigits}%` : null;
+  const where = `${PUBLIC_VISIBLE_STATUS_SQL}
+    AND (
+      unaccent(lower(full_name)) ILIKE unaccent(lower($1))
+      OR ($2::text IS NOT NULL AND document_id LIKE $2)
+    )`;
+  const [items, total] = await Promise.all([
+    pool.query<FoundPersonExternal>(
+      `SELECT ${selectColumnsExternal()} FROM found_people
+       WHERE ${where}
+       ORDER BY lower(full_name) ASC, source_url ASC
+       LIMIT $3 OFFSET $4`,
+      [nameQuery, documentQuery, pageSize, offset],
+    ),
+    pool.query<{ count: string }>(
+      `SELECT count(*) FROM found_people WHERE ${where}`,
+      [nameQuery, documentQuery],
+    ),
+  ]);
+  return pageResult(items.rows, page, pageSize, Number(total.rows[0]?.count ?? 0));
+}
+
+export async function searchPeopleByName(name: string, page: number, pageSize: number) {
+  const offset = (page - 1) * pageSize;
+  const nameQuery = `%${name}%`;
+  const where = `${PUBLIC_VISIBLE_STATUS_SQL}
+    AND unaccent(lower(full_name)) ILIKE unaccent(lower($1))`;
+  const [items, total] = await Promise.all([
+    pool.query<FoundPersonExternal>(
+      `SELECT ${selectColumnsExternal()} FROM found_people
+       WHERE ${where}
+       ORDER BY lower(full_name) ASC, source_url ASC
+       LIMIT $2 OFFSET $3`,
+      [nameQuery, pageSize, offset],
+    ),
+    pool.query<{ count: string }>(
+      `SELECT count(*) FROM found_people WHERE ${where}`,
+      [nameQuery],
+    ),
+  ]);
+  return pageResult(items.rows, page, pageSize, Number(total.rows[0]?.count ?? 0));
+}
+
+export async function searchPeopleByDocument(digits: string, page: number, pageSize: number) {
+  const offset = (page - 1) * pageSize;
+  const documentQuery = `%${digits}%`;
+  const where = `${PUBLIC_VISIBLE_STATUS_SQL} AND document_id LIKE $1`;
+  const [items, total] = await Promise.all([
+    pool.query<FoundPersonExternal>(
+      `SELECT ${selectColumnsExternal()} FROM found_people
+       WHERE ${where}
+       ORDER BY lower(full_name) ASC, source_url ASC
+       LIMIT $2 OFFSET $3`,
+      [documentQuery, pageSize, offset],
+    ),
+    pool.query<{ count: string }>(
+      `SELECT count(*) FROM found_people WHERE ${where}`,
+      [documentQuery],
+    ),
+  ]);
+  return pageResult(items.rows, page, pageSize, Number(total.rows[0]?.count ?? 0));
 }
 
 async function sha256(value: string) {

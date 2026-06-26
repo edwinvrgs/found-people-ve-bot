@@ -42,7 +42,17 @@ PUBLIC_BASE_URL=
 
 ```http
 GET /api/v1/found-people?page=1&pageSize=10
+GET /api/v1/found-people?name=Maria
+GET /api/v1/found-people?documentId=V12345678
+GET /api/v1/found-people?q=maria+perez
 ```
+
+Query parameters:
+
+- `name` — partial, case-insensitive match on full name only.
+- `documentId` — match on cédula number; accepts any format (`V12345678`, `V-12.345.678`, etc.) and normalizes to digits server-side. Requires 6–9 digits after normalization.
+- `q` — full search: partial, case-insensitive match on both name and cédula simultaneously.
+- `page` / `pageSize` — pagination; max `pageSize` is 100.
 
 Response:
 
@@ -54,7 +64,8 @@ Response:
       "fullName": "Maria Perez",
       "relevantInfo": "Hospital / shelter / public note",
       "sourceUrl": "https://example.com/source",
-      "status": "verified"
+      "status": "verified",
+      "documentId": "12345678"
     }
   ],
   "pagination": {
@@ -69,8 +80,9 @@ Response:
 Security notes:
 
 - Only public-visible records are returned: `verified` and `citizen_report`. Records marked as `needs_review` or `removed`/hidden are excluded.
+- `documentId` is returned as raw digits when present, or `null`.
 - Maximum `page`: 500.
-- Maximum `pageSize`: 10.
+- Maximum `pageSize`: 100.
 - Rate-limited by IP.
 
 ### Report a found person

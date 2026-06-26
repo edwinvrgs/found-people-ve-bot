@@ -1,7 +1,7 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { z } from "zod";
-import { deletePersonById, deletePersonBySourceUrl, ensureSchema, getFoundPeopleStats, getPersonById, incrementMetric, listPeople, listRecentCitizenReports, searchPeople, updatePersonStatus, upsertPeople, type FoundPerson, type RecordStatus } from "./db.js";
+import { deletePersonById, deletePersonBySourceUrl, ensureSchema, getFoundPeopleStats, getPersonById, incrementMetric, listPeople, listPeopleExternal, listRecentCitizenReports, searchPeople, searchPeopleByDocument, searchPeopleByName, searchPeopleExternal, updatePersonStatus, upsertPeople, type FoundPerson, type RecordStatus } from "./db.js";
 import { analyticsEnabled, capture, captureSystem, hashIdentifier, identify, shutdownAnalytics } from "./analytics.js";
 import { rateLimit, sweepRateLimitBuckets } from "./rate-limit.js";
 
@@ -37,6 +37,17 @@ const PeopleQuerySchema = z.object({
 
 const SearchQuerySchema = PeopleQuerySchema.extend({
   name: z.string().trim().min(2).max(80),
+});
+
+const ExternalListQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).max(500).default(1),
+  pageSize: z.coerce.number().int().min(1).max(100).default(10),
+  name: SafeSearchQuerySchema,
+  q: SafeSearchQuerySchema,
+  documentId: z.preprocess(
+    (v) => typeof v === "string" ? v.replace(/\D/g, "") : v,
+    z.string().min(6).max(9).optional(),
+  ),
 });
 
 const PersonPayloadSchema = z.object({
@@ -168,20 +179,30 @@ const server = createServer(async (request, response) => {
       const limited = applyRateLimit(response, `external-list:${clientKey}`, PUBLIC_API_LIMIT.count, PUBLIC_API_LIMIT.windowMs);
       if (limited) return;
 
-      const parsed = PeopleQuerySchema.safeParse(Object.fromEntries(url.searchParams));
+      const parsed = ExternalListQuerySchema.safeParse(Object.fromEntries(url.searchParams));
       if (!parsed.success) return json(response, 400, { error: "Invalid pagination" });
 
-      const { page, pageSize, q } = parsed.data;
-      const result = q
-        ? await searchPeople(q, page, pageSize)
-        : await listPeople(page, pageSize);
+      const { page, pageSize, q, name, documentId } = parsed.data;
+      const result = documentId
+        ? await searchPeopleByDocument(documentId, page, pageSize)
+        : name
+          ? await searchPeopleByName(name, page, pageSize)
+          : q
+            ? await searchPeopleExternal(q, page, pageSize)
+            : await listPeopleExternal(page, pageSize);
       await incrementMetric("external_api_list");
       captureSystem("external_api_list_requested", {
         page,
         pageSize,
         total: result.total,
         clientId: hashIdentifier(clientKey),
-        ...(q ? { query: q, queryLengthBucket: lengthBucket(q.length) } : {}),
+        ...(documentId
+          ? { queryType: "document", queryLengthBucket: lengthBucket(documentId.length) }
+          : name
+            ? { queryType: "name", queryLengthBucket: lengthBucket(name.length) }
+            : q
+              ? { queryType: "full_search", queryLengthBucket: lengthBucket(q.length) }
+              : {}),
       });
       return json(response, 200, {
         data: result.items,
