@@ -28,33 +28,30 @@ function timingSafeEqualString(actual: string, expected: string) {
   return actualBuffer.length === expectedBuffer.length && timingSafeEqual(actualBuffer, expectedBuffer);
 }
 
-export function guardAdminRequest(request: FastifyRequest, reply: FastifyReply) {
+export async function guardAdminRequest(request: FastifyRequest, reply: FastifyReply) {
   const clientKey = clientIp(request);
   const limited = applyRateLimit(reply, `admin:${clientKey}`, ADMIN_API_LIMIT.count, ADMIN_API_LIMIT.windowMs);
   if (limited) return;
 
   const authError = validateBearer(request.headers.authorization, env.ingestSecret);
-  if (authError) void json(reply, authError.status, { error: authError.message });
+  if (authError) return json(reply, authError.status, { error: authError.message });
 }
 
-export function guardExternalReportRequest(request: FastifyRequest, reply: FastifyReply) {
+export async function guardExternalReportRequest(request: FastifyRequest, reply: FastifyReply) {
   const clientKey = clientIp(request);
   const limited = applyRateLimit(reply, `external-report:${clientKey}`, EXTERNAL_REPORT_API_LIMIT.count, EXTERNAL_REPORT_API_LIMIT.windowMs);
   if (limited) return;
 
   const authError = validateBearerSecure(request.headers.authorization, env.externalApiSecret, "EXTERNAL_API_SECRET");
-  if (authError) {
-    void json(reply, authError.status, { error: authError.message });
-    return;
-  }
+  if (authError) return json(reply, authError.status, { error: authError.message });
 
   const authLimited = applyRateLimit(reply, `external-report-auth:${clientKey}:${hashForRateLimit(request.headers.authorization ?? "")}`, EXTERNAL_REPORT_API_LIMIT.count, EXTERNAL_REPORT_API_LIMIT.windowMs);
   if (authLimited) return;
 }
 
-export function guardTelegramWebhookRequest(request: FastifyRequest, reply: FastifyReply) {
+export async function guardTelegramWebhookRequest(request: FastifyRequest, reply: FastifyReply) {
   const secretError = validateTelegramSecret(request.headers["x-telegram-bot-api-secret-token"]);
-  if (secretError) void json(reply, 401, { error: secretError });
+  if (secretError) return json(reply, 401, { error: secretError });
 }
 
 

@@ -21,10 +21,6 @@ export function createApp() {
 
   server.server.headersTimeout = 16_000;
   server.server.keepAliveTimeout = 5_000;
-  server.removeAllContentTypeParsers();
-  server.addContentTypeParser("*", { parseAs: "buffer", bodyLimit: MAX_JSON_BODY_BYTES }, (_request, body, done) => {
-    done(null, body);
-  });
 
   server.addHook("onRequest", async (_request, reply) => {
     reply.header("x-content-type-options", "nosniff");
@@ -130,7 +126,9 @@ export function createApp() {
 
   server.post("/telegram/webhook", { onRequest: guardTelegramWebhookRequest }, async (request, reply) => {
     const update = TelegramUpdateSchema.parse(await readJson(request));
-    await handleTelegramUpdate(update);
+    void handleTelegramUpdate(update).catch((error) => {
+      logger.error({ event: "telegram_update_failed", ...errorDetails(error) }, "Telegram update failed");
+    });
     return json(reply, 200, { ok: true });
   });
 
