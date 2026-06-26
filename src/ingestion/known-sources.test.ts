@@ -62,6 +62,45 @@ describe("Known found-person API pagination", () => {
     assert.equal(shouldStopApiPagination(500), false);
   });
 
+  it("queries Encuentralos with its public estado and offset pagination", async () => {
+    const requestedUrls: string[] = [];
+
+    globalThis.fetch = (async (input: Parameters<typeof fetch>[0]) => {
+      requestedUrls.push(String(input));
+      return new Response(JSON.stringify({
+        items: [{
+          id: "413c9ded-6def-4bd0-95bd-41bf92d65549",
+          nombre: "Anneliese Mayorca",
+          edad: 63,
+          ultima_ubicacion: "Caracas Hatillo",
+          estado: "encontrado",
+          pv_por: "venezuelatebusca.com",
+          pv_salud: "Localizada",
+          cedula: "V-12.345.678",
+          creado: "2026-06-26T19:33:06.759Z",
+        }],
+        total: 1,
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    const result = await scrapeApiSource(
+      "encuentralos",
+      "https://encuentralos.tecnosoft.dev/api/personas",
+      "https://encuentralos.tecnosoft.dev/",
+      true,
+    );
+
+    assert.equal(requestedUrls.length, 1);
+    const url = new URL(requestedUrls[0]);
+    assert.equal(url.searchParams.get("estado"), "encontrado");
+    assert.equal(url.searchParams.get("limit"), "100");
+    assert.equal(url.searchParams.get("offset"), "0");
+    assert.equal(url.searchParams.has("page"), false);
+    assert.equal(result.candidates.length, 1);
+    assert.equal(result.candidates[0].sourceUrl, "https://encuentralos.tecnosoft.dev/p/413c9ded-6def-4bd0-95bd-41bf92d65549");
+    assert.equal(result.candidates[0].documentId, "12345678");
+  });
+
   it("does not burn every page when an API source requires reCAPTCHA", async () => {
     const requestedUrls: string[] = [];
 
