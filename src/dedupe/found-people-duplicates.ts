@@ -1,21 +1,64 @@
 export type DuplicateAuditRow = {
   id: string;
   fullName: string;
+  relevantInfo?: string | null;
   documentId: string | null;
   sourceUrl: string;
+  sourceHash?: string | null;
   status: string;
   raw?: Record<string, unknown> | null;
+  createdAt?: string | Date | null;
   updatedAt?: string | Date | null;
 };
 
 export type DuplicatePersonSummary = {
   id: string;
   fullName: string;
+  relevantInfo?: string | null;
   documentId: string | null;
   source: string;
   sourceUrl: string;
   status: string;
+  createdAt?: string | Date | null;
   updatedAt?: string | Date | null;
+};
+
+export type DedupeMergeReason = "same_document_id" | "same_source_url";
+
+export type DedupeMergeOperation = {
+  canonicalId: string;
+  duplicateIds: string[];
+  reason: DedupeMergeReason;
+  confidence: "high";
+  key: string;
+  canonical: DuplicatePersonSummary;
+  duplicates: DuplicatePersonSummary[];
+  merged: {
+    fullName: string;
+    relevantInfo: string | null;
+    documentId: string | null;
+    sourceUrl: string;
+    status: string;
+    raw: Record<string, unknown>;
+  };
+};
+
+export type DedupeMergePlan = {
+  generatedAt: string;
+  mode: "dry_run_plan";
+  strategy: {
+    automaticReasons: DedupeMergeReason[];
+    manualReviewReasons: string[];
+    destructiveDeletes: false;
+    duplicateDisposition: "soft_remove_with_merged_into_metadata";
+  };
+  summary: {
+    automaticClusters: number;
+    automaticDuplicateRows: number;
+    manualReviewClusters: number;
+  };
+  operations: DedupeMergeOperation[];
+  manualReview: DuplicateCluster[];
 };
 
 export type DuplicateCluster = {
@@ -152,6 +195,169 @@ export function buildDuplicateAuditReport(rows: DuplicateAuditRow[], options: Du
   };
 }
 
+
+export function buildDedupeMergePlan(rows: DuplicateAuditRow[], options: DuplicateAuditOptions = {}): DedupeMergePlan {
+  const report = buildDuplicateAuditReport(rows, options);
+  const operations: DedupeMergeOperation[] = [];
+  const claimedDuplicateIds = new Set<string>();
+
+  const addHighConfidenceGroups = (reason: DedupeMergeReason, groups: Map<string, DuplicateAuditRow[]>) => {
+    for (const [key, group] of groups) {
+      const eligible = group.filter((row) => !claimedDuplicateIds.has(row.id));
+      if (eligible.length < 2) continue;
+
+      const canonical = chooseCanonicalPerson(eligible);
+      const duplicates = eligible.filter((row) => row.id !== canonical.id);
+      if (duplicates.length === 0) continue;
+
+      const operation = buildMergeOperation(reason, key, canonical, duplicates);
+      operations.push(operation);
+      for (const duplicate of duplicates) claimedDuplicateIds.add(duplicate.id);
+    }
+  };
+
+  addHighConfidenceGroups(
+    "same_document_id",
+    groupRows(rows.filter((row) => row.documentId), (row) => row.documentId!),
+  );
+  addHighConfidenceGroups(
+    "same_source_url",
+    groupRows(rows.filter((row) => row.sourceUrl), (row) => row.sourceUrl),
+  );
+
+  const automaticallyHandledIds = new Set(operations.flatMap((operation) => [operation.canonicalId, ...operation.duplicateIds]));
+  const manualReview = report.clusters.sameNormalizedName.filter((cluster) =>
+    cluster.people.some((person) => !automaticallyHandledIds.has(person.id)),
+  );
+
+  return {
+    generatedAt: new Date().toISOString(),
+    mode: "dry_run_plan",
+    strategy: {
+      automaticReasons: ["same_document_id", "same_source_url"],
+      manualReviewReasons: ["same_normalized_name", "similar_name"],
+      destructiveDeletes: false,
+      duplicateDisposition: "soft_remove_with_merged_into_metadata",
+    },
+    summary: {
+      automaticClusters: operations.length,
+      automaticDuplicateRows: operations.reduce((total, operation) => total + operation.duplicateIds.length, 0),
+      manualReviewClusters: manualReview.length + report.summary.highSimilarityPairs,
+    },
+    operations,
+    manualReview,
+  };
+}
+
+function buildMergeOperation(reason: DedupeMergeReason, key: string, canonical: DuplicateAuditRow, duplicates: DuplicateAuditRow[]): DedupeMergeOperation {
+  const mergedRaw = mergeRawMetadata(canonical, duplicates, reason, key);
+  return {
+    canonicalId: canonical.id,
+    duplicateIds: duplicates.map((duplicate) => duplicate.id),
+    reason,
+    confidence: "high",
+    key,
+    canonical: summarizePerson(canonical),
+    duplicates: duplicates.map(summarizePerson),
+    merged: {
+      fullName: bestName([canonical, ...duplicates]),
+      relevantInfo: bestRelevantInfo([canonical, ...duplicates]),
+      documentId: canonical.documentId ?? duplicates.find((duplicate) => duplicate.documentId)?.documentId ?? null,
+      sourceUrl: canonical.sourceUrl,
+      status: canonical.status === "removed" ? "verified" : canonical.status,
+      raw: mergedRaw,
+    },
+  };
+}
+
+function chooseCanonicalPerson(rows: DuplicateAuditRow[]) {
+  return [...rows].sort((first, second) => canonicalScore(second) - canonicalScore(first) || dateValue(second.updatedAt) - dateValue(first.updatedAt))[0]!;
+}
+
+function canonicalScore(row: DuplicateAuditRow) {
+  return (row.status !== "removed" ? 10_000 : 0)
+    + (row.documentId ? 2_000 : 0)
+    + sourcePriority(row)
+    + Math.min(500, String(row.relevantInfo ?? "").length)
+    + Math.min(100, normalizeName(row.fullName).length);
+}
+
+function sourcePriority(row: DuplicateAuditRow) {
+  const source = sourceOf(row);
+  if (source === "telegram_report") return 900;
+  if (source === "venezuelatebusca") return 800;
+  if (source === "encuentralos") return 700;
+  if (source === "consolidated_injured_list") return 600;
+  if (source === "github_ocr") return 500;
+  if (source === "desaparecidos_terremoto") return 400;
+  return 100;
+}
+
+function bestName(rows: DuplicateAuditRow[]) {
+  return [...rows].sort((first, second) => normalizeName(second.fullName).length - normalizeName(first.fullName).length)[0]!.fullName;
+}
+
+function bestRelevantInfo(rows: DuplicateAuditRow[]) {
+  return [...rows]
+    .map((row) => row.relevantInfo?.trim() ?? "")
+    .filter(Boolean)
+    .sort((first, second) => second.length - first.length)[0] ?? null;
+}
+
+function mergeRawMetadata(canonical: DuplicateAuditRow, duplicates: DuplicateAuditRow[], reason: DedupeMergeReason, key: string) {
+  const sources = [canonical, ...duplicates].flatMap((row) => ingestionSourcesFor(row));
+  return {
+    ...(canonical.raw ?? {}),
+    ingestionSources: uniqueObjectsByStableJson(sources),
+    mergedDuplicateIds: uniqueStrings([...(arrayOfStrings(canonical.raw?.mergedDuplicateIds)), ...duplicates.map((duplicate) => duplicate.id)]),
+    mergeReason: reason,
+    mergeKey: key,
+  };
+}
+
+function ingestionSourcesFor(row: DuplicateAuditRow) {
+  const rawSources = Array.isArray(row.raw?.ingestionSources) ? row.raw.ingestionSources : [];
+  const normalizedRawSources = rawSources.filter((source): source is Record<string, unknown> => Boolean(source) && typeof source === "object" && !Array.isArray(source));
+  return [
+    ...normalizedRawSources,
+    {
+      source: sourceOf(row),
+      sourceUrl: row.sourceUrl,
+      sourceHash: row.sourceHash ?? null,
+      documentId: row.documentId,
+      fullName: row.fullName,
+      matchedBy: "dedupe_merge",
+    },
+  ];
+}
+
+function uniqueObjectsByStableJson(values: Record<string, unknown>[]) {
+  const seen = new Set<string>();
+  const unique: Record<string, unknown>[] = [];
+  for (const value of values) {
+    const key = JSON.stringify(Object.keys(value).sort().reduce<Record<string, unknown>>((sorted, objectKey) => {
+      sorted[objectKey] = value[objectKey];
+      return sorted;
+    }, {}));
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(value);
+  }
+  return unique;
+}
+
+function arrayOfStrings(value: unknown) {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+function uniqueStrings(values: string[]) {
+  return [...new Set(values)];
+}
+
+function dateValue(value: string | Date | null | undefined) {
+  return value ? new Date(value).getTime() || 0 : 0;
+}
+
 export function normalizeName(value: string) {
   return String(value || "")
     .normalize("NFD")
@@ -187,10 +393,12 @@ function summarizePerson(row: DuplicateAuditRow): DuplicatePersonSummary {
   return {
     id: row.id,
     fullName: row.fullName,
+    ...(row.relevantInfo ? { relevantInfo: row.relevantInfo } : {}),
     documentId: row.documentId,
     source: sourceOf(row),
     sourceUrl: row.sourceUrl,
     status: row.status,
+    ...(row.createdAt ? { createdAt: row.createdAt } : {}),
     ...(row.updatedAt ? { updatedAt: row.updatedAt } : {}),
   };
 }
