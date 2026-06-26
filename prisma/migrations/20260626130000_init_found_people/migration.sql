@@ -15,16 +15,6 @@ CREATE TABLE IF NOT EXISTS found_people (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-UPDATE found_people
-SET status = 'citizen_report'
-WHERE raw->>'provider' = 'telegram_report'
-  AND status = 'verified';
-
-ALTER TABLE found_people
-  ALTER COLUMN full_name SET NOT NULL,
-  ALTER COLUMN source_url SET NOT NULL,
-  ALTER COLUMN source_hash SET NOT NULL,
-  ALTER COLUMN status SET NOT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_found_people_full_name ON found_people (lower(full_name));
 CREATE INDEX IF NOT EXISTS idx_found_people_full_name_trgm ON found_people USING gin (full_name gin_trgm_ops);
