@@ -1,7 +1,9 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import { z } from "zod";
-import { deletePersonById, deletePersonBySourceUrl, ensureSchema, getFoundPeopleStats, getPersonById, incrementMetric, listPeople, listPeopleExternal, listRecentCitizenReports, searchPeople, searchPeopleByDocument, searchPeopleByName, searchPeopleExternal, updatePersonStatus, upsertPeople, type FoundPerson, type RecordStatus } from "./db.js";
+import { ensureSchema, type FoundPerson, type RecordStatus } from "./db.js";
+import { createCitizenReport, createExternalReport, getPersonDetails, getStats, ingestPeople, listCitizenReports, listExternalFoundPeople, listPublicPeople, removePersonById, removePeopleBySourceUrl, searchPublicPeople, setPersonStatus } from "./services/found-people-service.js";
+import { incrementMetric } from "./services/metrics-service.js";
 import { analyticsEnabled, capture, captureSystem, hashIdentifier, identify, shutdownAnalytics } from "./analytics.js";
 import { rateLimit, sweepRateLimitBuckets } from "./rate-limit.js";
 import { errorDetails, logger } from "./logger.js";
@@ -175,7 +177,7 @@ server.get("/api/people", async (request, reply) => {
 
   const parsed = PeopleQuerySchema.safeParse(queryParams(request));
   if (!parsed.success) return json(reply, 400, { error: "Invalid pagination" });
-  return json(reply, 200, await listPeople(parsed.data.page, parsed.data.pageSize));
+  return json(reply, 200, await listPublicPeople(parsed.data.page, parsed.data.pageSize));
 });
 
 server.get("/api/search", async (request, reply) => {
@@ -185,7 +187,7 @@ server.get("/api/search", async (request, reply) => {
 
   const parsed = SearchQuerySchema.safeParse(queryParams(request));
   if (!parsed.success) return json(reply, 400, { error: "Invalid search" });
-  const result = await searchPeople(parsed.data.name, parsed.data.page, parsed.data.pageSize);
+  const result = await searchPublicPeople(parsed.data.name, parsed.data.page, parsed.data.pageSize);
   captureSearchMatched({
     surface: "public_api",
     total: result.total,
@@ -207,13 +209,7 @@ server.get("/api/v1/found-people", async (request, reply) => {
   if (!parsed.success) return json(reply, 400, { error: "Invalid pagination" });
 
   const { page, pageSize, q, name, documentId } = parsed.data;
-  const result = documentId
-    ? await searchPeopleByDocument(documentId, page, pageSize)
-    : name
-      ? await searchPeopleByName(name, page, pageSize)
-      : q
-        ? await searchPeopleExternal(q, page, pageSize)
-        : await listPeopleExternal(page, pageSize);
+  const result = await listExternalFoundPeople({ page, pageSize, q, name, documentId });
   await incrementMetric("external_api_list");
   captureSystem("external_api_list_requested", {
     page,
@@ -246,7 +242,10 @@ server.post("/api/v1/found-people/reports", { onRequest: guardExternalReportRequ
   const parsed = ExternalReportSchema.safeParse(await readJson(request));
   if (!parsed.success) return json(reply, 400, { error: "Invalid report payload" });
 
-  const report = await createExternalReport(parsed.data, request.headers["idempotency-key"]);
+  const report = await createExternalReport(parsed.data, {
+    idempotencyKey: typeof request.headers["idempotency-key"] === "string" ? request.headers["idempotency-key"] : undefined,
+    publicBaseUrl: publicBaseUrl(),
+  });
   await incrementMetric("external_api_report");
   captureSystem("external_report_created", {
     hasSourceUrl: Boolean(parsed.data.sourceUrl),
@@ -264,7 +263,7 @@ server.post("/api/ingest", { onRequest: guardAdminRequest }, async (request, rep
   const parsed = IngestSchema.safeParse(await readJson(request));
   if (!parsed.success) return json(reply, 400, { error: "Invalid ingest payload" });
 
-  const rows = await upsertPeople(parsed.data.people);
+  const rows = await ingestPeople(parsed.data.people);
   return json(reply, 200, { upserted: rows.length, people: rows });
 });
 
@@ -272,7 +271,7 @@ server.delete("/api/people", { onRequest: guardAdminRequest }, async (request, r
   const parsed = DeletePersonSchema.safeParse(await readJson(request));
   if (!parsed.success) return json(reply, 400, { error: "Invalid delete payload" });
 
-  const rows = await deletePersonBySourceUrl(parsed.data.sourceUrl);
+  const rows = await removePeopleBySourceUrl(parsed.data.sourceUrl);
   return json(reply, 200, { deleted: rows.length, people: rows });
 });
 
@@ -375,36 +374,6 @@ function isJsonRequest(request: FastifyRequest) {
 
 function hashForRateLimit(value: string) {
   return createHash("sha256").update(value).digest("hex").slice(0, 16);
-}
-
-async function createExternalReport(payload: z.infer<typeof ExternalReportSchema>, idempotencyKeyHeader: string | string[] | undefined) {
-  const idempotencyKey = typeof idempotencyKeyHeader === "string" ? idempotencyKeyHeader.trim().slice(0, 120) : "";
-  const stableHashInput = idempotencyKey || JSON.stringify({ fullName: payload.fullName, location: payload.location, sourceUrl: payload.sourceUrl ?? null });
-  const reportHash = createHash("sha256").update(stableHashInput).digest("hex");
-  const sourceUrl = payload.sourceUrl ?? `${publicBaseUrl()}/api/v1/found-people/reports/${reportHash.slice(0, 16)}`;
-  const relevantInfo = [
-    `Reporte externo — ubicación: ${payload.location}`,
-    payload.notes ? `nota: ${payload.notes}` : null,
-    payload.sourceUrl ? "fuente enviada por servicio externo" : "sin enlace externo",
-  ].filter(Boolean).join(" — ");
-
-  const [person] = await upsertPeople([{
-    fullName: payload.fullName,
-    relevantInfo,
-    sourceUrl,
-    status: "citizen_report",
-    sourceHash: `external-report:${reportHash}`,
-    raw: {
-      provider: "external_report_api",
-      location: payload.location,
-      notes: payload.notes ?? null,
-      reporter: payload.reporter ?? null,
-      submittedSourceUrl: payload.sourceUrl ?? null,
-      idempotencyKeyHash: idempotencyKey ? createHash("sha256").update(idempotencyKey).digest("hex") : null,
-    },
-  }]);
-
-  return person;
 }
 
 function publicBaseUrl() {
@@ -600,7 +569,7 @@ async function handleAdminCommand(message: NonNullable<TelegramUpdate["message"]
   if (text === "/admin" || text === "/admin_help") return sendMessage(message.chat.id, adminHelpText());
 
   if (text === "/admin_stats") {
-    const stats = await getFoundPeopleStats();
+    const stats = await getStats();
     return sendMessage(message.chat.id, `📊 <b>Stats</b>
 
 Visible: ${stats.visible}
@@ -618,14 +587,14 @@ ${formatMetrics(stats.metrics)}`);
     const parts = text.split(/\s+/).slice(1);
     const limit = Math.min(Number(parts[0]) || 5, 10);
     const status = parseStatus(parts[1]);
-    const reports = await listRecentCitizenReports(limit, status ?? undefined);
+    const reports = await listCitizenReports(limit, status ?? undefined);
     if (reports.length === 0) return sendMessage(message.chat.id, "No recent citizen reports.");
     return sendMessage(message.chat.id, formatAdminPeopleList(reports, `Latest citizen reports (${reports.length})`));
   }
 
   if (text.startsWith("/admin_digest")) {
-    const stats = await getFoundPeopleStats();
-    const reports = await listRecentCitizenReports(5);
+    const stats = await getStats();
+    const reports = await listCitizenReports(5);
     return sendMessage(message.chat.id, `🧾 <b>Admin digest</b>
 
 Visible: ${stats.visible}
@@ -639,7 +608,7 @@ ${reports.length ? formatAdminPeopleList(reports, "Latest reports") : "No recent
     const [command, rawId] = text.split(/\s+/, 2);
     if (!rawId) return sendMessage(message.chat.id, `Usage: ${command} id`);
     const status: RecordStatus = command === "/admin_verify" ? "verified" : command === "/admin_review" ? "needs_review" : "removed";
-    const rows = await updatePersonStatus(resolvePersonId(rawId), status);
+    const rows = await setPersonStatus(resolvePersonId(rawId), status);
     if (rows.length === 0) return sendMessage(message.chat.id, "Record not found.");
     await incrementMetric(`admin_${status}`);
     return sendMessage(message.chat.id, `✅ Status updated to <b>${escapeHtml(statusLabel(status))}</b>:
@@ -651,7 +620,7 @@ ${formatAdminPerson(rows[0])}`);
     const target = text.replace(/^\/admin_delete\s*/i, "").trim();
     if (!target) return sendMessage(message.chat.id, "Usage: /admin_delete id-or-url");
 
-    const rows = isHttpUrl(target) ? await deletePersonBySourceUrl(target) : await deletePersonById(resolvePersonId(target));
+    const rows = isHttpUrl(target) ? await removePeopleBySourceUrl(target) : await removePersonById(resolvePersonId(target));
     if (rows.length === 0) return sendMessage(message.chat.id, "No matching record found to delete.");
     await incrementMetric("admin_delete");
     return sendMessage(message.chat.id, `🗑️ Record permanently deleted:
@@ -697,7 +666,7 @@ async function handleCallback(callback: NonNullable<TelegramUpdate["callback_que
   const adminActionMatch = data.match(/^adm:(verify|review|hide):([a-f0-9]{12})$/);
   if (adminActionMatch && isAdminChat(chatId)) {
     const status = adminActionMatch[1] === "verify" ? "verified" : adminActionMatch[1] === "review" ? "needs_review" : "removed";
-    const rows = await updatePersonStatus(resolvePersonId(adminActionMatch[2]), status as RecordStatus);
+    const rows = await setPersonStatus(resolvePersonId(adminActionMatch[2]), status as RecordStatus);
     await answerCallback(callback.id, rows.length ? "Actualizado" : "No encontrado");
     return rows.length ? sendMessage(chatId, `Estado actualizado:
 
@@ -755,7 +724,7 @@ async function handleSourceCommand(message: NonNullable<TelegramUpdate["message"
   const id = commandPayload(text);
   if (!id) return sendMessage(message.chat.id, sourceText());
 
-  const person = await getPersonById(resolvePersonId(id));
+  const person = await getPersonDetails(resolvePersonId(id));
   if (!person) return sendMessage(message.chat.id, "No encontré ese registro.");
   return sendMessage(message.chat.id, `ℹ️ <b>Fuente del registro</b>
 
@@ -872,15 +841,15 @@ async function submitReport(message: NonNullable<TelegramUpdate["message"]>, dra
   }
 
   const sourceUrl = draft.sourceUrl ?? fallbackReportSourceUrl(message);
-  const relevantInfo = `Reporte ciudadano — ubicación: ${location}${draft.sourceUrl ? " — fuente enviada por usuario" : " — sin enlace externo"}`;
-  const [person] = await upsertPeople([{
+  const person = await createCitizenReport({
     fullName,
-    relevantInfo,
+    location,
     sourceUrl,
-    status: "citizen_report",
-    sourceHash: `telegram-report:${message.chat.id}:${message.message_id}`,
-    raw: { provider: "telegram_report", location, submittedSourceUrl: draft.sourceUrl ?? null, reporter: reporterRaw(message), messageId: message.message_id, chatId: message.chat.id },
-  }]);
+    submittedSourceUrl: draft.sourceUrl ?? null,
+    reporter: reporterRaw(message),
+    messageId: message.message_id,
+    chatId: message.chat.id,
+  });
   await incrementMetric("telegram_report");
   capture(telegramEvent("citizen_report_created", message.chat.id), telegramDistinctId(message.chat.id, message.from), {
     hasSourceUrl: Boolean(draft.sourceUrl),
@@ -898,7 +867,7 @@ ${formatAdminPerson(person)}`, adminActionButtons(person.id));
 }
 
 async function sendPeoplePage(chatId: number, page: number, messageId?: number, user?: TelegramUser) {
-  const result = await listPeople(page, 5);
+  const result = await listPublicPeople(page, 5);
   capture(telegramEvent("list_viewed", chatId), telegramDistinctId(chatId, user), { page, total: result.total, resultCount: result.items.length });
   const text = formatPeopleList(result.items, `Personas encontradas (${result.page}/${result.totalPages})`, result.total);
   const buttons = paginationButtons("list", result.page, result.totalPages);
@@ -910,7 +879,7 @@ async function sendSearchResults(chatId: number, query: string, message?: NonNul
   if (!parsed.success) return sendMessage(chatId, "Escribe al menos 2 caracteres y máximo 80 para buscar. Puedes buscar por nombre o cédula.");
 
   await incrementMetric("telegram_search");
-  const result = await searchPeople(parsed.data, 1, 5);
+  const result = await searchPublicPeople(parsed.data, 1, 5);
   const documentSearch = documentSearchLabel(parsed.data);
   const distinctId = telegramDistinctId(chatId, message?.from);
   capture(telegramEvent("search_performed", chatId), distinctId, {

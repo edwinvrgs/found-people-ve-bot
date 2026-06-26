@@ -197,7 +197,7 @@ async function main() {
   console.log(JSON.stringify({ outputPath, counts: report.counts, sources }, null, 2));
   } finally {
     await shutdownAnalytics();
-    await db?.pool.end().catch(() => undefined);
+    await db?.disconnectDatabase().catch(() => undefined);
   }
 }
 
