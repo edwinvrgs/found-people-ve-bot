@@ -752,7 +752,17 @@ Estado: ${statusEmoji(person.status)} ${escapeHtml(statusLabel(person.status))}`
 function sourceText() {
   return `ℹ️ <b>Sobre las fuentes</b>
 
-Los datos vienen de fuentes públicas, reportes ciudadanos y transcripciones de listas manuscritas de pacientes atendidos en centros médicos.
+Este bot centraliza registros consultables y enlazados a su fuente. El crédito de los datos públicos corresponde a quienes los recopilan, transcriben, publican y verifican durante la emergencia.
+
+Fuentes actuales:
+• https://github.com/ecrespo/OCR-data_Terremoto_Venezuela_24062026
+• https://venezuelatebusca.com/
+• https://desaparecidosterremotovenezuela.com/
+• Reportes ciudadanos enviados al bot
+• Reportes externos recibidos por la API pública autenticada
+
+También revisamos el catálogo de recursos de Tiltely:
+• https://venezuela.tiltely.com/
 
 Cada resultado muestra un enlace cuando está disponible. Los reportes ciudadanos ayudan en la emergencia, pero no reemplazan confirmación familiar, canales oficiales o la fuente original.
 
