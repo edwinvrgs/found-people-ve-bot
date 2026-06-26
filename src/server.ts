@@ -11,9 +11,28 @@ const TELEGRAM_CHAT_LIMIT = { count: 20, windowMs: 60_000 };
 const ADMIN_API_LIMIT = { count: 20, windowMs: 60_000 };
 const EXTERNAL_REPORT_API_LIMIT = { count: 30, windowMs: 60_000 };
 
+const SEARCH_QUERY_MAX_LENGTH = 80;
+const SEARCH_QUERY_SAFE_CHARS = /^[\p{L}\p{M}\d .,'’_-]+$/u;
+
+function normalizeSearchQuery(value: unknown) {
+  if (typeof value !== "string") return value;
+  const normalized = value.normalize("NFKC").replace(/\s+/g, " ").trim();
+  return normalized || undefined;
+}
+
+const SafeSearchQuerySchema = z.preprocess(
+  normalizeSearchQuery,
+  z.string()
+    .min(2)
+    .max(SEARCH_QUERY_MAX_LENGTH)
+    .regex(SEARCH_QUERY_SAFE_CHARS, "Search contains unsupported characters")
+    .optional(),
+);
+
 const PeopleQuerySchema = z.object({
   page: z.coerce.number().int().min(1).max(500).default(1),
   pageSize: z.coerce.number().int().min(1).max(10).default(5),
+  q: SafeSearchQuerySchema,
 });
 
 const SearchQuerySchema = PeopleQuerySchema.extend({
@@ -152,13 +171,17 @@ const server = createServer(async (request, response) => {
       const parsed = PeopleQuerySchema.safeParse(Object.fromEntries(url.searchParams));
       if (!parsed.success) return json(response, 400, { error: "Invalid pagination" });
 
-      const result = await listPeople(parsed.data.page, parsed.data.pageSize);
+      const { page, pageSize, q } = parsed.data;
+      const result = q
+        ? await searchPeople(q, page, pageSize)
+        : await listPeople(page, pageSize);
       await incrementMetric("external_api_list");
       captureSystem("external_api_list_requested", {
-        page: parsed.data.page,
-        pageSize: parsed.data.pageSize,
+        page,
+        pageSize,
         total: result.total,
         clientId: hashIdentifier(clientKey),
+        ...(q ? { query: q, queryLengthBucket: lengthBucket(q.length) } : {}),
       });
       return json(response, 200, {
         data: result.items,
