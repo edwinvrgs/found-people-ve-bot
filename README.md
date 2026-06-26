@@ -146,7 +146,7 @@ npm run ingest:found-people            # dry-run; writes artifact only
 npm run ingest:found-people -- --write # scrape and upsert into database
 ```
 
-The scraper ingests found/localized sources, paginates safely, extracts `documentId` when available, masks public document references in `relevantInfo`, and emits aggregate-only analytics.
+The scraper ingests found/localized sources directly from the known source URLs, paginates safely, extracts `documentId` when available, masks public document references in `relevantInfo`, and emits aggregate-only analytics. It does not depend on the Tiltely index page to discover upstream sources.
 
 SocialCrawl ingestion is disabled by default. To run it intentionally, set `FOUND_PEOPLE_SOCIALCRAWL_ENABLED=true`; provider calls are bounded by `FOUND_PEOPLE_PROVIDER_TIMEOUT_MS`.
 

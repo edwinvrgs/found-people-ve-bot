@@ -2,7 +2,6 @@ import { createHash } from "node:crypto";
 import { extractDocumentId, sanitizeRelevantInfo } from "./sanitize.js";
 import type { SearchCandidateInput } from "./search-provider.js";
 
-const TILTELY_URL = "https://venezuela.tiltely.com/";
 const VENEZUELA_TE_BUSCA_URL = "https://venezuelatebusca.com/";
 const DESAPARECIDOS_API_URL = "https://desaparecidos-terremoto-api.theempire.tech/api/personas";
 const ENCUENTRALOS_API_URL = "https://encuentralos.tecnosoft.dev/api/personas";
@@ -33,19 +32,7 @@ type ApiPeopleResponse = {
 
 type SourceName = "venezuelatebusca" | "desaparecidos_terremoto" | "encuentralos";
 
-type TiltelyLink = {
-  origin: string;
-  url: string;
-  text: string;
-};
-
-const TILTELY_FOUND_SOURCE_ORIGINS = {
-  venezuelaTeBusca: "https://venezuelatebusca.com",
-  desaparecidos: "https://desaparecidosterremotovenezuela.com",
-  encuentralos: "https://encuentralos.tecnosoft.dev",
-} as const;
-
-// Links reviewed from Tiltely that are intentionally not ingested as found-person sources:
+// Links reviewed from the public earthquake index that are intentionally not ingested as found-person sources:
 // - https://www.ayudasismo.org: affected people / needs coordination, not found-person records.
 // - https://t.me/encontrados_ve_bot: this bot is the ingestion target, not an upstream source.
 // - https://terremotovenezuela.com: building damage / trapped people map, not found-person records.
@@ -122,30 +109,8 @@ function candidate(source: SourceName, id: string, fullName: string, relevantInf
     sourceUrl,
     documentId: extractDocumentId(documentValue ?? relevantInfo),
     sourceHash: createHash("sha256").update(`${source}:${id}:${normalizedName}`).digest("hex"),
-    raw: { provider: "tiltely", source, ...raw },
+    raw: { provider: source, source, ...raw },
   };
-}
-
-function extractTiltelyLinks(html: string) {
-  const links: TiltelyLink[] = [];
-  for (const match of html.matchAll(/<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi)) {
-    try {
-      const url = new URL(match[1], TILTELY_URL);
-      if (url.protocol !== "http:" && url.protocol !== "https:") continue;
-      links.push({
-        origin: url.origin,
-        url: url.toString(),
-        text: textFromHtml(match[2]),
-      });
-    } catch {
-      // ignore invalid links
-    }
-  }
-  return links;
-}
-
-function hasTiltelySource(links: TiltelyLink[], origin: string) {
-  return links.some((link) => link.origin === origin);
 }
 
 function parseVenezuelaTeBuscaPage(html: string, page: number) {
@@ -305,33 +270,15 @@ export async function scrapeApiSource(source: Extract<SourceName, "desaparecidos
   return { candidates, errors };
 }
 
-export async function searchTiltelyFoundPersonCandidates(signal?: AbortSignal): Promise<{ candidates: SearchCandidateInput[]; errors: string[] }> {
-  const errors: string[] = [];
-  let links: TiltelyLink[] = [];
-
-  try {
-    const response = await fetch(TILTELY_URL, { headers: { Accept: "text/html" }, signal });
-    if (!response.ok) errors.push(`tiltely index: ${response.status}`);
-    else links = extractTiltelyLinks(await response.text());
-  } catch (error) {
-    if (isAbortError(error, signal)) throw error;
-    errors.push(`tiltely index: ${error instanceof Error ? error.message : "unknown error"}`);
-  }
-
-  // If Tiltely is temporarily unavailable, keep the known public sources enabled.
-  const shouldUseKnownSources = links.length === 0;
-  const hasVenezuelaTeBusca = shouldUseKnownSources || hasTiltelySource(links, TILTELY_FOUND_SOURCE_ORIGINS.venezuelaTeBusca);
-  const hasDesaparecidos = shouldUseKnownSources || hasTiltelySource(links, TILTELY_FOUND_SOURCE_ORIGINS.desaparecidos);
-  const hasEncuentralos = shouldUseKnownSources || hasTiltelySource(links, TILTELY_FOUND_SOURCE_ORIGINS.encuentralos);
-
+export async function searchKnownFoundPersonSources(signal?: AbortSignal): Promise<{ candidates: SearchCandidateInput[]; errors: string[] }> {
   const [venezuelaTeBusca, desaparecidos, encuentralos] = await Promise.all([
-    scrapeVenezuelaTeBusca(hasVenezuelaTeBusca, signal),
-    scrapeApiSource("desaparecidos_terremoto", DESAPARECIDOS_API_URL, "https://desaparecidosterremotovenezuela.com/", hasDesaparecidos, signal),
-    scrapeApiSource("encuentralos", ENCUENTRALOS_API_URL, "https://encuentralos.tecnosoft.dev/", hasEncuentralos, signal),
+    scrapeVenezuelaTeBusca(true, signal),
+    scrapeApiSource("desaparecidos_terremoto", DESAPARECIDOS_API_URL, "https://desaparecidosterremotovenezuela.com/", true, signal),
+    scrapeApiSource("encuentralos", ENCUENTRALOS_API_URL, "https://encuentralos.tecnosoft.dev/", true, signal),
   ]);
 
   return {
     candidates: [...venezuelaTeBusca.candidates, ...desaparecidos.candidates, ...encuentralos.candidates],
-    errors: [...errors, ...venezuelaTeBusca.errors, ...desaparecidos.errors, ...encuentralos.errors],
+    errors: [...venezuelaTeBusca.errors, ...desaparecidos.errors, ...encuentralos.errors],
   };
 }
