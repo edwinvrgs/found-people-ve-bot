@@ -68,51 +68,141 @@ function searchWhereSql(nameQuery: string, documentQuery: string | null) {
     )`;
 }
 
-export async function upsertPeople(people: UpsertPersonInput[]) {
-  const rows: FoundPerson[] = [];
+type PreparedUpsertPerson = UpsertPersonInput & {
+  hash: string;
+  status: RecordStatus;
+  documentId: string | null;
+};
 
-  for (const person of people) {
-    const hash = person.sourceHash ?? await sha256(`${person.sourceUrl}:${person.fullName}`);
-    const status = person.status ?? "verified";
-    const documentId = normalizeDocumentId(person.documentId);
-    const existing = await findExistingIngestMatch(hash, documentId, person.sourceUrl);
+export async function upsertPeople(people: UpsertPersonInput[]) {
+  const preparedPeople = await Promise.all(people.map(prepareUpsertPerson));
+  const matchCache = await prefetchExistingIngestMatches(preparedPeople);
+  const updates: ExistingIngestPerson[] = [];
+  const inserts: ExistingIngestPerson[] = [];
+
+  for (const person of preparedPeople) {
+    const existing = matchCache.find(person);
 
     if (existing) {
-      const enriched = enrichExistingPerson(existing, person, { hash, status, documentId });
-      const [row] = await prisma.$queryRaw<FoundPerson[]>`
-        UPDATE found_people SET
-          full_name = ${enriched.fullName},
-          relevant_info = ${enriched.relevantInfo},
-          document_id = ${enriched.documentId},
-          source_url = ${enriched.sourceUrl},
-          status = ${enriched.status},
-          raw = ${JSON.stringify(enriched.raw)}::jsonb,
-          updated_at = now()
-        WHERE id = ${existing.id}::uuid
-        RETURNING ${selectColumnsSql()}`;
-      rows.push(row);
+      const enriched = enrichExistingPerson(existing, person, { hash: person.hash, status: person.status, documentId: person.documentId });
+      const planned = plannedExistingRow(existing, enriched);
+      const pendingInsertIndex = inserts.findIndex((row) => row.id === planned.id);
+      if (pendingInsertIndex >= 0) {
+        inserts[pendingInsertIndex] = planned;
+      } else {
+        updates.push(planned);
+      }
+      matchCache.remember(planned);
       continue;
     }
 
-    const [row] = await prisma.$queryRaw<FoundPerson[]>`
-      INSERT INTO found_people (full_name, relevant_info, document_id, source_url, source_hash, status, raw)
-      VALUES (${person.fullName}, ${person.relevantInfo ?? null}, ${documentId}, ${person.sourceUrl}, ${hash}, ${status}, ${JSON.stringify(person.raw ?? {})}::jsonb)
-      ON CONFLICT (source_hash) DO UPDATE SET
-        full_name = EXCLUDED.full_name,
-        relevant_info = EXCLUDED.relevant_info,
-        document_id = COALESCE(EXCLUDED.document_id, found_people.document_id),
-        source_url = EXCLUDED.source_url,
-        status = CASE WHEN found_people.status = 'removed' THEN found_people.status ELSE EXCLUDED.status END,
-        raw = EXCLUDED.raw,
-        updated_at = now()
-      RETURNING ${selectColumnsSql()}`;
-    rows.push(row);
+    const planned = plannedInsertRow(person);
+    inserts.push(planned);
+    matchCache.remember(planned);
   }
 
-  return rows;
+  const [updatedRows, insertedRows] = await Promise.all([
+    bulkUpdateFoundPeople(updates),
+    bulkInsertFoundPeople(inserts),
+  ]);
+
+  return [...updatedRows, ...insertedRows];
 }
 
-type ExistingIngestPerson = FoundPerson & {
+async function prepareUpsertPerson(person: UpsertPersonInput): Promise<PreparedUpsertPerson> {
+  return {
+    ...person,
+    hash: person.sourceHash ?? await sha256(`${person.sourceUrl}:${person.fullName}`),
+    status: person.status ?? "verified",
+    documentId: normalizeDocumentId(person.documentId),
+  };
+}
+
+function plannedExistingRow(existing: ExistingIngestPerson, enriched: EnrichedPerson): ExistingIngestPerson {
+  return {
+    id: existing.id,
+    fullName: enriched.fullName,
+    relevantInfo: enriched.relevantInfo,
+    documentId: enriched.documentId,
+    sourceUrl: enriched.sourceUrl,
+    sourceHash: existing.sourceHash,
+    status: enriched.status,
+    raw: enriched.raw as Prisma.JsonObject,
+  };
+}
+
+function plannedInsertRow(person: PreparedUpsertPerson): ExistingIngestPerson {
+  return {
+    id: crypto.randomUUID(),
+    fullName: person.fullName,
+    relevantInfo: person.relevantInfo ?? null,
+    documentId: person.documentId,
+    sourceUrl: person.sourceUrl,
+    sourceHash: person.hash,
+    status: person.status,
+    raw: (person.raw ?? {}) as Prisma.JsonObject,
+  };
+}
+
+async function bulkUpdateFoundPeople(rows: ExistingIngestPerson[]) {
+  if (rows.length === 0) return [];
+
+  return prisma.$queryRaw<ExistingIngestPerson[]>`
+    WITH data AS (
+      SELECT * FROM jsonb_to_recordset(${JSON.stringify(rows)}::jsonb) AS data(
+        id uuid,
+        "fullName" text,
+        "relevantInfo" text,
+        "documentId" text,
+        "sourceUrl" text,
+        status text,
+        raw jsonb
+      )
+    )
+    UPDATE found_people SET
+      full_name = data."fullName",
+      relevant_info = data."relevantInfo",
+      document_id = data."documentId",
+      source_url = data."sourceUrl",
+      status = data.status,
+      raw = data.raw,
+      updated_at = now()
+    FROM data
+    WHERE found_people.id = data.id
+    RETURNING ${selectIngestMatchColumnsSql()}`;
+}
+
+async function bulkInsertFoundPeople(rows: ExistingIngestPerson[]) {
+  if (rows.length === 0) return [];
+
+  return prisma.$queryRaw<ExistingIngestPerson[]>`
+    WITH data AS (
+      SELECT * FROM jsonb_to_recordset(${JSON.stringify(rows)}::jsonb) AS data(
+        id uuid,
+        "fullName" text,
+        "relevantInfo" text,
+        "documentId" text,
+        "sourceUrl" text,
+        "sourceHash" text,
+        status text,
+        raw jsonb
+      )
+    )
+    INSERT INTO found_people (id, full_name, relevant_info, document_id, source_url, source_hash, status, raw)
+    SELECT id, "fullName", "relevantInfo", "documentId", "sourceUrl", "sourceHash", status, raw
+    FROM data
+    ON CONFLICT (source_hash) DO UPDATE SET
+      full_name = EXCLUDED.full_name,
+      relevant_info = EXCLUDED.relevant_info,
+      document_id = COALESCE(EXCLUDED.document_id, found_people.document_id),
+      source_url = EXCLUDED.source_url,
+      status = CASE WHEN found_people.status = 'removed' THEN found_people.status ELSE EXCLUDED.status END,
+      raw = EXCLUDED.raw,
+      updated_at = now()
+    RETURNING ${selectIngestMatchColumnsSql()}`;
+}
+
+export type ExistingIngestPerson = FoundPerson & {
   documentId: string | null;
   sourceHash: string;
   raw: Prisma.JsonValue;
@@ -133,25 +223,67 @@ type EnrichedPerson = {
   raw: Record<string, unknown>;
 };
 
-async function findExistingIngestMatch(sourceHash: string, documentId: string | null, sourceUrl: string) {
-  const matches = await prisma.$queryRaw<ExistingIngestPerson[]>`
-    SELECT ${selectColumnsSql()},
-           document_id AS "documentId",
-           source_hash AS "sourceHash",
-           raw AS "raw"
+type IngestMatchLookup = {
+  hash: string;
+  documentId: string | null;
+  sourceUrl: string;
+};
+
+export class IngestMatchCache {
+  private readonly bySourceHash = new Map<string, ExistingIngestPerson>();
+  private readonly byDocumentId = new Map<string, ExistingIngestPerson>();
+  private readonly bySourceUrl = new Map<string, ExistingIngestPerson>();
+
+  constructor(rows: ExistingIngestPerson[] = []) {
+    for (const row of rows) {
+      this.remember(row, { overwrite: false });
+    }
+  }
+
+  find(person: IngestMatchLookup) {
+    return this.bySourceHash.get(person.hash)
+      ?? (person.documentId ? this.byDocumentId.get(person.documentId) : undefined)
+      ?? this.bySourceUrl.get(person.sourceUrl)
+      ?? null;
+  }
+
+  remember(row: ExistingIngestPerson, options: { overwrite?: boolean } = {}) {
+    const overwrite = options.overwrite ?? true;
+    setIfAllowed(this.bySourceHash, row.sourceHash, row, overwrite);
+    if (row.documentId) setIfAllowed(this.byDocumentId, row.documentId, row, overwrite);
+    setIfAllowed(this.bySourceUrl, row.sourceUrl, row, overwrite);
+  }
+}
+
+function setIfAllowed(map: Map<string, ExistingIngestPerson>, key: string, row: ExistingIngestPerson, overwrite: boolean) {
+  if (overwrite || !map.has(key)) map.set(key, row);
+}
+
+async function prefetchExistingIngestMatches(people: PreparedUpsertPerson[]) {
+  if (people.length === 0) return new IngestMatchCache();
+
+  const sourceHashes = uniqueValues(people.map((person) => person.hash));
+  const documentIds = uniqueValues(people.map((person) => person.documentId).filter((value): value is string => Boolean(value)));
+  const sourceUrls = uniqueValues(people.map((person) => person.sourceUrl));
+  const filters: Prisma.Sql[] = [Prisma.sql`source_hash IN (${Prisma.join(sourceHashes)})`];
+  if (documentIds.length > 0) filters.push(Prisma.sql`document_id IN (${Prisma.join(documentIds)})`);
+  filters.push(Prisma.sql`source_url IN (${Prisma.join(sourceUrls)})`);
+
+  const rows = await prisma.$queryRaw<ExistingIngestPerson[]>`
+    SELECT ${selectIngestMatchColumnsSql()}
     FROM found_people
-    WHERE source_hash = ${sourceHash}
-       OR (${documentId}::text IS NOT NULL AND document_id = ${documentId})
-       OR source_url = ${sourceUrl}
-    ORDER BY CASE
-      WHEN source_hash = ${sourceHash} THEN 1
-      WHEN ${documentId}::text IS NOT NULL AND document_id = ${documentId} THEN 2
-      WHEN source_url = ${sourceUrl} THEN 3
-      ELSE 4
-    END,
-    updated_at DESC
-    LIMIT 1`;
-  return matches[0] ?? null;
+    WHERE ${orSql(filters)}
+    ORDER BY updated_at DESC`;
+
+  return new IngestMatchCache(rows);
+}
+
+function uniqueValues(values: string[]) {
+  return [...new Set(values)];
+}
+
+function orSql(filters: Prisma.Sql[]) {
+  return filters.slice(1).reduce((where, filter) => Prisma.sql`${where} OR ${filter}`, filters[0]!);
 }
 
 export function enrichExistingPerson(existing: ExistingIngestPerson, incoming: UpsertPersonInput, match: IngestMatchInput): EnrichedPerson {
@@ -381,6 +513,17 @@ function selectColumnsSql() {
     relevant_info AS "relevantInfo",
     source_url AS "sourceUrl",
     status AS "status"`;
+}
+
+function selectIngestMatchColumnsSql() {
+  return Prisma.sql`found_people.id,
+    found_people.full_name AS "fullName",
+    found_people.relevant_info AS "relevantInfo",
+    found_people.source_url AS "sourceUrl",
+    found_people.status AS "status",
+    found_people.document_id AS "documentId",
+    found_people.source_hash AS "sourceHash",
+    found_people.raw AS "raw"`;
 }
 
 function selectColumnsExternalSql() {

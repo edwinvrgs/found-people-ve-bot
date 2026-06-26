@@ -8,7 +8,7 @@ const ENCUENTRALOS_API_URL = "https://encuentralos.tecnosoft.dev/api/personas";
 
 const VENEZUELA_TE_BUSCA_PAGE_LIMIT = 250;
 const API_PAGE_LIMIT = 250;
-const API_PAGE_DELAY_MS = 650;
+const SLOW_API_PAGE_DELAY_MS = 650;
 const API_PAGE_SIZE = 100;
 
 type ApiPerson = {
@@ -227,7 +227,8 @@ export async function scrapeApiSource(source: Extract<SourceName, "desaparecidos
 
   for (let page = 1; page <= API_PAGE_LIMIT; page += 1) {
     throwIfAborted(signal);
-    if (page > 1) await sleep(API_PAGE_DELAY_MS, signal);
+    const pageDelayMs = apiPageDelayMs(source);
+    if (page > 1 && pageDelayMs > 0) await sleep(pageDelayMs, signal);
 
     const url = new URL(apiUrl);
     if (source === "encuentralos") {
@@ -278,6 +279,10 @@ export async function scrapeApiSource(source: Extract<SourceName, "desaparecidos
   }
 
   return { candidates, errors };
+}
+
+function apiPageDelayMs(source: Extract<SourceName, "desaparecidos_terremoto" | "encuentralos">) {
+  return source === "encuentralos" ? 0 : SLOW_API_PAGE_DELAY_MS;
 }
 
 export async function searchKnownFoundPersonSources(signal?: AbortSignal): Promise<{ candidates: SearchCandidateInput[]; errors: string[] }> {
