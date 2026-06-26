@@ -6,7 +6,7 @@ Date: 2026-06-26
 
 ## Executive summary
 
-The bot backend is reliable enough for the emergency MVP, but the repo is becoming public and the backend should be split into clearer layers before more contributors build on it. The highest-risk area is not a single bug; it is the amount of responsibility concentrated in `src/server.ts` and the fact that database DDL currently lives in application boot code.
+The bot backend is reliable enough for the emergency MVP, but the repo is becoming public and the backend should be split into clearer layers before more contributors build on it. The highest-risk area is not a single bug; it is the amount of responsibility concentrated in the backend entrypoints. Runtime database DDL was previously a risk, but it has since been removed from application boot and Prisma migrations are now the schema source of truth.
 
 This PR intentionally keeps behavior changes small. It adds the foundation for safer future refactors:
 
@@ -49,14 +49,14 @@ src/repositories/found-people.ts
 
 ### 2. Runtime schema management
 
-`ensureSchema()` creates extensions, tables, constraints, indexes, and legacy column migrations at runtime. This is convenient, but risky in a public/stable deployment:
+Resolved. Runtime schema creation was removed after Railway migration execution was confirmed. The app should not create extensions, tables, constraints, indexes, or legacy column migrations during server startup or ingest.
 
-- application boot can fail if the app role loses DDL privileges;
-- schema changes are hard to review and roll back;
-- concurrent deploys can race on DDL;
-- there is no migration history.
+The schema source of truth is now:
 
-This PR adds a first migration under `prisma/migrations/.../migration.sql` that mirrors the current schema. The recommended deployment flow after this lands is:
+- `prisma/schema.prisma` for the reviewable model;
+- `prisma/migrations/**/migration.sql` for database DDL, including PostgreSQL-specific extensions, constraints, and indexes.
+
+Recommended deployment flow:
 
 ```bash
 npm run db:migrate
@@ -64,7 +64,7 @@ npm run build
 npm run start
 ```
 
-For one deploy, keep `ensureSchema()` as a compatibility safety net. Once Railway migration execution is confirmed, remove runtime DDL from app boot in a follow-up PR.
+If startup or ingest fails because a relation/column/index is missing, fix it with a Prisma migration instead of adding runtime DDL back into app code.
 
 ### 3. Prisma adoption sequencing
 
