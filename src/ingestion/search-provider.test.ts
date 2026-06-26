@@ -1,9 +1,39 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { searchProvider } from "./search-provider.js";
+import { isSocialCrawlIngestEnabled, searchProvider } from "./search-provider.js";
 
 const silentLoggerEnv = process.env.LOG_LEVEL;
 process.env.LOG_LEVEL = "silent";
+
+describe("SocialCrawl ingest flag", () => {
+  it("is disabled by default", () => {
+    const previous = process.env.FOUND_PEOPLE_SOCIALCRAWL_ENABLED;
+    delete process.env.FOUND_PEOPLE_SOCIALCRAWL_ENABLED;
+    try {
+      assert.equal(isSocialCrawlIngestEnabled(), false);
+    } finally {
+      if (previous === undefined) delete process.env.FOUND_PEOPLE_SOCIALCRAWL_ENABLED;
+      else process.env.FOUND_PEOPLE_SOCIALCRAWL_ENABLED = previous;
+    }
+  });
+
+  it("only enables SocialCrawl when explicitly set to true", () => {
+    const previous = process.env.FOUND_PEOPLE_SOCIALCRAWL_ENABLED;
+    try {
+      process.env.FOUND_PEOPLE_SOCIALCRAWL_ENABLED = "false";
+      assert.equal(isSocialCrawlIngestEnabled(), false);
+      process.env.FOUND_PEOPLE_SOCIALCRAWL_ENABLED = "1";
+      assert.equal(isSocialCrawlIngestEnabled(), false);
+      process.env.FOUND_PEOPLE_SOCIALCRAWL_ENABLED = "true";
+      assert.equal(isSocialCrawlIngestEnabled(), true);
+      process.env.FOUND_PEOPLE_SOCIALCRAWL_ENABLED = "TRUE";
+      assert.equal(isSocialCrawlIngestEnabled(), true);
+    } finally {
+      if (previous === undefined) delete process.env.FOUND_PEOPLE_SOCIALCRAWL_ENABLED;
+      else process.env.FOUND_PEOPLE_SOCIALCRAWL_ENABLED = previous;
+    }
+  });
+});
 
 describe("searchProvider", () => {
   it("returns a provider error instead of hanging when the provider times out", async () => {
