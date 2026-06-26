@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { errorDetails, logger } from "../logger.js";
 import { buildFoundPersonSocialQueries } from "./queries.js";
 import { extractFoundPerson, looksLikePersonName } from "./extract-person.js";
 import { searchConsolidatedCandidates } from "./consolidated-source.js";
@@ -46,6 +47,7 @@ type CandidateSource = {
 
 const SOCIALCRAWL_BASE_URL = "https://www.socialcrawl.dev/v1";
 const SOCIAL_SOURCE_HOSTS = ["x.com", "twitter.com", "instagram.com", "facebook.com", "tiktok.com"];
+const DEFAULT_PROVIDER_TIMEOUT_MS = 120_000;
 
 export function canonicalizeSourceUrl(value: string) {
   const url = new URL(value);
@@ -167,7 +169,7 @@ function isRejected(candidate: SearchCandidateInput | RejectedSearchCandidate): 
   return "reason" in candidate;
 }
 
-async function searchSocialCrawl(queryLimit: number): Promise<SearchProviderResult> {
+async function searchSocialCrawl(queryLimit: number, signal?: AbortSignal): Promise<SearchProviderResult> {
   if (queryLimit <= 0) return { candidates: [], errors: [], rejected: [] };
   const apiKey = process.env.SOCIALCRAWL_API_KEY;
   if (!apiKey) return { candidates: [], errors: ["SOCIALCRAWL_API_KEY is not configured; skipped social search"], rejected: [] };
@@ -177,6 +179,7 @@ async function searchSocialCrawl(queryLimit: number): Promise<SearchProviderResu
   const errors: string[] = [];
 
   for (const query of buildFoundPersonSocialQueries(queryLimit)) {
+    signal?.throwIfAborted();
     try {
       const url = new URL(`${SOCIALCRAWL_BASE_URL}/search/everywhere`);
       url.searchParams.set("query", query);
@@ -185,6 +188,7 @@ async function searchSocialCrawl(queryLimit: number): Promise<SearchProviderResu
 
       const response = await fetch(url, {
         headers: { Accept: "application/json", "x-api-key": apiKey },
+        signal,
       });
       const envelope = (await response.json().catch(() => ({}))) as SocialCrawlEnvelope;
 
@@ -221,6 +225,7 @@ async function searchSocialCrawl(queryLimit: number): Promise<SearchProviderResu
         else candidates.push(candidate);
       }
     } catch (error) {
+      if (isAbortError(error, signal)) throw error;
       errors.push(`${query}: ${error instanceof Error ? error.message : "unknown SocialCrawl error"}`);
     }
   }
@@ -229,10 +234,11 @@ async function searchSocialCrawl(queryLimit: number): Promise<SearchProviderResu
 }
 
 export async function searchFoundPersonCandidates(queryLimit = 1): Promise<SearchProviderResult> {
+  const providerTimeoutMs = configuredPositiveInt("FOUND_PEOPLE_PROVIDER_TIMEOUT_MS", DEFAULT_PROVIDER_TIMEOUT_MS);
   const [social, consolidated, tiltely] = await Promise.all([
-    searchSocialCrawl(queryLimit),
-    searchConsolidatedCandidates(),
-    searchTiltelyFoundPersonCandidates(),
+    searchProvider("socialcrawl", (signal) => searchSocialCrawl(queryLimit, signal), providerTimeoutMs),
+    searchProvider("github_ocr_consolidated_csv", (signal) => searchConsolidatedCandidates(signal), providerTimeoutMs),
+    searchProvider("tiltely", (signal) => searchTiltelyFoundPersonCandidates(signal), providerTimeoutMs),
   ]);
 
   const byHash = new Map<string, SearchCandidateInput>();
@@ -245,4 +251,45 @@ export async function searchFoundPersonCandidates(queryLimit = 1): Promise<Searc
     errors: [...social.errors, ...consolidated.errors, ...tiltely.errors],
     rejected: social.rejected ?? [],
   };
+}
+
+export async function searchProvider(name: string, search: (signal: AbortSignal) => Promise<SearchProviderResult>, timeoutMs = DEFAULT_PROVIDER_TIMEOUT_MS) {
+  const startedAt = Date.now();
+  const controller = new AbortController();
+  let timeout: NodeJS.Timeout | null = null;
+  logger.info({ event: "ingest_provider_search_started", provider: name, timeoutMs }, "Found-person provider search started");
+  try {
+    const searchPromise = search(controller.signal);
+    searchPromise.catch(() => undefined);
+    const timeoutPromise = new Promise<SearchProviderResult>((resolve) => {
+      timeout = setTimeout(() => {
+        controller.abort(new Error(`${name} timed out after ${timeoutMs}ms`));
+        resolve({ candidates: [], errors: [`${name}: timed out after ${timeoutMs}ms`] });
+      }, timeoutMs);
+    });
+    const result = await Promise.race([searchPromise, timeoutPromise]);
+    logger.info({
+      event: result.errors.some((error) => error.includes("timed out after")) ? "ingest_provider_search_timed_out" : "ingest_provider_search_completed",
+      provider: name,
+      durationMs: Date.now() - startedAt,
+      candidates: result.candidates.length,
+      errors: result.errors.length,
+      rejected: result.rejected?.length ?? 0,
+    }, "Found-person provider search completed");
+    return result;
+  } catch (error) {
+    logger.error({ event: "ingest_provider_search_failed", provider: name, durationMs: Date.now() - startedAt, ...errorDetails(error) }, "Found-person provider search failed");
+    return { candidates: [], errors: [`${name}: ${error instanceof Error ? error.message : "unknown provider error"}`] };
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
+function isAbortError(error: unknown, signal?: AbortSignal) {
+  return signal?.aborted || (error instanceof Error && error.name === "AbortError");
+}
+
+function configuredPositiveInt(name: string, fallback: number) {
+  const value = Number(process.env[name]);
+  return Number.isInteger(value) && value > 0 ? value : fallback;
 }
