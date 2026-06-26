@@ -15,33 +15,6 @@ CREATE TABLE IF NOT EXISTS found_people (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- Backward-compatible cleanup for the early Spanish-column prototype.
-DO $$
-BEGIN
-  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'found_people' AND column_name = 'nombre_completo')
-    AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'found_people' AND column_name = 'full_name') THEN
-    ALTER TABLE found_people RENAME COLUMN nombre_completo TO full_name;
-  END IF;
-
-  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'found_people' AND column_name = 'informacion_relevante')
-    AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'found_people' AND column_name = 'relevant_info') THEN
-    ALTER TABLE found_people RENAME COLUMN informacion_relevante TO relevant_info;
-  END IF;
-
-  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'found_people' AND column_name = 'fuente_url')
-    AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'found_people' AND column_name = 'source_url') THEN
-    ALTER TABLE found_people RENAME COLUMN fuente_url TO source_url;
-  END IF;
-
-  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'found_people' AND column_name = 'hash_fuente')
-    AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'found_people' AND column_name = 'source_hash') THEN
-    ALTER TABLE found_people RENAME COLUMN hash_fuente TO source_hash;
-  END IF;
-END $$;
-
-ALTER TABLE found_people
-  ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'verified',
-  ADD COLUMN IF NOT EXISTS document_id TEXT;
 
 UPDATE found_people
 SET status = 'citizen_report'
