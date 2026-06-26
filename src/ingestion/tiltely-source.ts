@@ -247,7 +247,11 @@ function apiPersonToCandidate(source: Extract<SourceName, "desaparecidos_terremo
   return candidate(source, id, fullName, `${source === "encuentralos" ? "Encuéntralos" : "Desaparecidos Terremoto Venezuela"} · ${fields}`, `${baseUrl}?persona=${encodeURIComponent(id)}`, { id, estado, updatedAt: person.updatedAt ?? null }, [asString(person.descripcion), asString(person.localizadoNota)].join(" "));
 }
 
-async function scrapeApiSource(source: Extract<SourceName, "desaparecidos_terremoto" | "encuentralos">, apiUrl: string, publicUrl: string, enabled: boolean, signal?: AbortSignal) {
+export function shouldStopApiPagination(status: number) {
+  return status === 401 || status === 403 || status === 429;
+}
+
+export async function scrapeApiSource(source: Extract<SourceName, "desaparecidos_terremoto" | "encuentralos">, apiUrl: string, publicUrl: string, enabled: boolean, signal?: AbortSignal) {
   if (!enabled) return { candidates: [], errors: [] };
 
   const candidates: SearchCandidateInput[] = [];
@@ -273,7 +277,7 @@ async function scrapeApiSource(source: Extract<SourceName, "desaparecidos_terrem
       }
       if (!response.ok) {
         errors.push(`${source} page ${page}: ${response.status}`);
-        if (response.status === 429) break;
+        if (shouldStopApiPagination(response.status)) break;
         continue;
       }
       const body = (await response.json().catch(() => ({}))) as ApiPeopleResponse;

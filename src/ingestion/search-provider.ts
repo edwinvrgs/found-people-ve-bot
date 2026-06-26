@@ -235,8 +235,11 @@ async function searchSocialCrawl(queryLimit: number, signal?: AbortSignal): Prom
 
 export async function searchFoundPersonCandidates(queryLimit = 1): Promise<SearchProviderResult> {
   const providerTimeoutMs = configuredPositiveInt("FOUND_PEOPLE_PROVIDER_TIMEOUT_MS", DEFAULT_PROVIDER_TIMEOUT_MS);
+  const socialSearchEnabled = isSocialCrawlIngestEnabled();
   const [social, consolidated, tiltely] = await Promise.all([
-    searchProvider("socialcrawl", (signal) => searchSocialCrawl(queryLimit, signal), providerTimeoutMs),
+    socialSearchEnabled
+      ? searchProvider("socialcrawl", (signal) => searchSocialCrawl(queryLimit, signal), providerTimeoutMs)
+      : skippedProvider("socialcrawl", "FOUND_PEOPLE_SOCIALCRAWL_ENABLED is not true"),
     searchProvider("github_ocr_consolidated_csv", (signal) => searchConsolidatedCandidates(signal), providerTimeoutMs),
     searchProvider("tiltely", (signal) => searchTiltelyFoundPersonCandidates(signal), providerTimeoutMs),
   ]);
@@ -251,6 +254,11 @@ export async function searchFoundPersonCandidates(queryLimit = 1): Promise<Searc
     errors: [...social.errors, ...consolidated.errors, ...tiltely.errors],
     rejected: social.rejected ?? [],
   };
+}
+
+function skippedProvider(provider: string, reason: string): SearchProviderResult {
+  logger.info({ event: "ingest_provider_search_skipped", provider, reason }, "Found-person provider search skipped");
+  return { candidates: [], errors: [] };
 }
 
 export async function searchProvider(name: string, search: (signal: AbortSignal) => Promise<SearchProviderResult>, timeoutMs = DEFAULT_PROVIDER_TIMEOUT_MS) {
@@ -292,4 +300,8 @@ function isAbortError(error: unknown, signal?: AbortSignal) {
 function configuredPositiveInt(name: string, fallback: number) {
   const value = Number(process.env[name]);
   return Number.isInteger(value) && value > 0 ? value : fallback;
+}
+
+export function isSocialCrawlIngestEnabled() {
+  return process.env.FOUND_PEOPLE_SOCIALCRAWL_ENABLED?.toLowerCase() === "true";
 }
