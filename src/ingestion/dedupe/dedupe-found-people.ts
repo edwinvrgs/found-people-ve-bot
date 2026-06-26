@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { prisma } from "./prisma.js";
-import { buildDedupeMergePlan, type DedupeMergeOperation, type DedupeMergePlan, type DuplicateAuditRow } from "./dedupe/found-people-duplicates.js";
+import { prisma } from "../../prisma.js";
+import { buildDedupeMergePlan, type DedupeMergeOperation, type DedupeMergePlan, type DuplicateAuditRow } from "./found-people-duplicates.js";
 
 const DEFAULT_OUTPUT_DIR = "artifacts/found-people-dedupe";
 
@@ -106,8 +106,6 @@ function writePlan(outputDir: string, plan: DedupeMergePlan) {
 
 async function applyPlan(plan: DedupeMergePlan, appliedBy: string) {
   return prisma.$transaction(async (tx) => {
-    await tx.$executeRawUnsafe(createAuditTableSql);
-
     let canonicalRowsUpdated = 0;
     let duplicateRowsRemoved = 0;
     let auditRowsInserted = 0;
@@ -184,20 +182,6 @@ async function applyOperation(tx: Omit<typeof prisma, "$connect" | "$disconnect"
       )`;
   }
 }
-
-const createAuditTableSql = `
-  CREATE TABLE IF NOT EXISTS found_people_merge_audit (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    canonical_id UUID NOT NULL,
-    duplicate_id UUID NOT NULL,
-    reason TEXT NOT NULL,
-    confidence TEXT NOT NULL,
-    before_canonical JSONB NOT NULL,
-    before_duplicate JSONB NOT NULL,
-    planned_canonical JSONB NOT NULL,
-    applied_by TEXT NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-  )`;
 
 main()
   .catch((error) => {

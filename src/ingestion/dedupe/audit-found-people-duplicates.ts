@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { prisma } from "./prisma.js";
-import { buildDuplicateAuditReport, type DuplicateAuditRow } from "./dedupe/found-people-duplicates.js";
+import { prisma } from "../../prisma.js";
+import { buildDuplicateAuditReport, type DuplicateAuditRow } from "./found-people-duplicates.js";
 
 const DEFAULT_OUTPUT_DIR = "artifacts/found-people-duplicates";
 

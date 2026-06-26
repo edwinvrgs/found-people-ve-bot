@@ -17,8 +17,8 @@
     "security:audit": "npm audit --omit=dev",
     "dev:env": "node --env-file=.env --import tsx src/server.ts",
     "verify": "npm run typecheck && npm test && npm run build",
-    "audit:duplicates": "tsx src/audit-found-people-duplicates.ts",
-    "dedupe:found-people": "tsx src/dedupe-found-people.ts"
+    "audit:duplicates": "tsx src/ingestion/dedupe/audit-found-people-duplicates.ts",
+    "dedupe:found-people": "tsx src/ingestion/dedupe/dedupe-found-people.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.19.3",
