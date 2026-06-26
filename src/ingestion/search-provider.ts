@@ -4,7 +4,7 @@ import { buildFoundPersonSocialQueries } from "./queries.js";
 import { extractFoundPerson, looksLikePersonName } from "./extract-person.js";
 import { searchConsolidatedCandidates } from "./consolidated-source.js";
 import { extractDocumentId, sanitizeRelevantInfo } from "./sanitize.js";
-import { searchTiltelyFoundPersonCandidates } from "./tiltely-source.js";
+import { searchKnownFoundPersonSources } from "./known-sources.js";
 import type { FoundPersonCandidate } from "./types.js";
 
 export type SearchCandidateInput = FoundPersonCandidate & {
@@ -236,22 +236,22 @@ async function searchSocialCrawl(queryLimit: number, signal?: AbortSignal): Prom
 export async function searchFoundPersonCandidates(queryLimit = 1): Promise<SearchProviderResult> {
   const providerTimeoutMs = configuredPositiveInt("FOUND_PEOPLE_PROVIDER_TIMEOUT_MS", DEFAULT_PROVIDER_TIMEOUT_MS);
   const socialSearchEnabled = isSocialCrawlIngestEnabled();
-  const [social, consolidated, tiltely] = await Promise.all([
+  const [social, consolidated, knownSources] = await Promise.all([
     socialSearchEnabled
       ? searchProvider("socialcrawl", (signal) => searchSocialCrawl(queryLimit, signal), providerTimeoutMs)
       : skippedProvider("socialcrawl", "FOUND_PEOPLE_SOCIALCRAWL_ENABLED is not true"),
     searchProvider("github_ocr_consolidated_csv", (signal) => searchConsolidatedCandidates(signal), providerTimeoutMs),
-    searchProvider("tiltely", (signal) => searchTiltelyFoundPersonCandidates(signal), providerTimeoutMs),
+    searchProvider("known_found_person_sources", (signal) => searchKnownFoundPersonSources(signal), providerTimeoutMs),
   ]);
 
   const byHash = new Map<string, SearchCandidateInput>();
-  for (const candidate of [...social.candidates, ...consolidated.candidates, ...tiltely.candidates]) {
+  for (const candidate of [...social.candidates, ...consolidated.candidates, ...knownSources.candidates]) {
     byHash.set(candidate.sourceHash, candidate);
   }
 
   return {
     candidates: [...byHash.values()],
-    errors: [...social.errors, ...consolidated.errors, ...tiltely.errors],
+    errors: [...social.errors, ...consolidated.errors, ...knownSources.errors],
     rejected: social.rejected ?? [],
   };
 }

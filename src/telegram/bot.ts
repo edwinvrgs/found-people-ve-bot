@@ -398,11 +398,9 @@ Fuentes actuales:
 • https://github.com/ecrespo/OCR-data_Terremoto_Venezuela_24062026
 • https://venezuelatebusca.com/
 • https://desaparecidosterremotovenezuela.com/
+• https://encuentralos.tecnosoft.dev/
 • Reportes ciudadanos enviados al bot
 • Reportes externos recibidos por la API pública autenticada
-
-También revisamos el catálogo de recursos de Tiltely:
-• https://venezuela.tiltely.com/
 
 Cada resultado muestra un enlace cuando está disponible. Los reportes ciudadanos ayudan en la emergencia, pero no reemplazan confirmación familiar, canales oficiales o la fuente original.
 
