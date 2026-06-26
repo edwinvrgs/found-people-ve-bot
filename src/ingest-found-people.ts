@@ -1,8 +1,8 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { errorDetails, logger } from "./logger.js";
-import { normalizeDocumentId, sanitizeRelevantInfo } from "./ingest/found-persons/sanitize.js";
-import { searchFoundPersonCandidates, type SearchCandidateInput } from "./ingest/found-persons/search-provider.js";
+import { normalizeDocumentId, sanitizeRelevantInfo } from "./ingestion/sanitize.js";
+import { searchFoundPersonCandidates, type SearchCandidateInput } from "./ingestion/search-provider.js";
 
 const DEFAULT_OUTPUT_DIR = "artifacts/found-people-ingest";
 const DEFAULT_DB_BATCH_SIZE = 500;
