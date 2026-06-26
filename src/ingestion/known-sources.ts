@@ -102,7 +102,7 @@ function candidate(source: SourceName, id: string, fullName: string, relevantInf
   };
 }
 
-function parseVenezuelaTeBuscaPage(html: string, page: number) {
+export function parseVenezuelaTeBuscaPage(html: string, page: number) {
   const text = textFromHtml(html);
   const hasMore = /Cargar más/u.test(text);
   const section = text.match(/Registrar persona(.+?)(?:Cargar más|🇻🇪Venezuela te busca|Venezuela te busca|$)/u)?.[1] ?? "";
@@ -124,8 +124,9 @@ function parseVenezuelaTeBuscaPage(html: string, page: number) {
 
     const fullName = cleaned.slice(0, marker.index).trim();
     const details = cleaned.slice(marker.index).trim();
-    const sourceUrl = `${VENEZUELA_TE_BUSCA_URL}?status=found&page=${page}`;
-    const id = `${page}:${index}:${fullName}:${details.slice(-40)}`;
+    const recordId = createHash("sha256").update(`${fullName}:${details}`).digest("hex").slice(0, 16);
+    const sourceUrl = `${VENEZUELA_TE_BUSCA_URL}?status=found&page=${page}#record=${recordId}`;
+    const id = recordId;
     const item = candidate(
       "venezuelatebusca",
       id,

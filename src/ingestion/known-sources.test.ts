@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
-import { scrapeApiSource, searchKnownFoundPersonSources, shouldStopApiPagination } from "./known-sources.js";
+import { parseVenezuelaTeBuscaPage, scrapeApiSource, searchKnownFoundPersonSources, shouldStopApiPagination } from "./known-sources.js";
 
 const originalFetch = globalThis.fetch;
 
@@ -32,6 +32,25 @@ describe("Known found-person source ingestion", () => {
     assert.equal(requestedUrls.some((url) => url.includes("venezuelatebusca.com")), true);
     assert.equal(requestedUrls.some((url) => url.includes("desaparecidos-terremoto-api.theempire.tech")), true);
     assert.equal(requestedUrls.some((url) => url.includes("encuentralos.tecnosoft.dev")), true);
+  });
+});
+
+describe("VenezuelaTeBusca page parsing", () => {
+  it("uses a unique source URL per person instead of one shared page URL", () => {
+    const html = `
+      <html><body>
+        Registrar persona
+        Localizada Ana Maria Perez 24 años femenino 25 jun. 2026 hospital central
+        Localizada Carlos Jose Rivas 41 años masculino 25 jun. 2026 refugio municipal
+        Cargar más
+      </body></html>`;
+
+    const result = parseVenezuelaTeBuscaPage(html, 7);
+
+    assert.equal(result.candidates.length, 2);
+    assert.equal(new Set(result.candidates.map((candidate) => candidate.sourceUrl)).size, 2);
+    assert.equal(result.candidates.every((candidate) => candidate.sourceUrl.startsWith("https://venezuelatebusca.com/?status=found&page=7#record=")), true);
+    assert.equal(result.candidates.every((candidate) => /^[a-f0-9]{64}$/.test(candidate.sourceHash)), true);
   });
 });
 
