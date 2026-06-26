@@ -148,6 +148,8 @@ npm run ingest:found-people -- --write # scrape and upsert into database
 
 The scraper ingests found/localized sources, paginates safely, extracts `documentId` when available, masks public document references in `relevantInfo`, and emits aggregate-only analytics.
 
+SocialCrawl ingestion is disabled by default. To run it intentionally, set `FOUND_PEOPLE_SOCIALCRAWL_ENABLED=true`; provider calls are bounded by `FOUND_PEOPLE_PROVIDER_TIMEOUT_MS`.
+
 Manual ingestion remains available through `POST /api/ingest` with `INGEST_SECRET`.
 
 ## Development
