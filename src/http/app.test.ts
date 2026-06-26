@@ -16,6 +16,7 @@ async function createTestApp() {
   process.env.TELEGRAM_BOT_TOKEN = "test-token";
   process.env.ANALYTICS_HASH_SALT = "test-salt";
   process.env.DATABASE_URL = "postgresql://user:pass@localhost:5432/test";
+  process.env.EXTERNAL_API_SECRET = "external-secret";
 
   const { createApp } = await import("./app.js");
   return createApp();
@@ -61,6 +62,101 @@ function mockTelegramApi() {
     },
   };
 }
+
+test("health endpoint returns service status without touching dependencies", async () => {
+  const app = await createTestApp();
+
+  try {
+    const response = await app.inject({ method: "GET", url: "/health" });
+
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(JSON.parse(response.body), { ok: true, analytics: "disabled" });
+    assert.equal(response.headers["x-content-type-options"], "nosniff");
+    assert.equal(response.headers["cache-control"], "no-store");
+  } finally {
+    await app.close();
+  }
+});
+
+test("unknown routes return a JSON 404", async () => {
+  const app = await createTestApp();
+
+  try {
+    const response = await app.inject({ method: "GET", url: "/missing" });
+
+    assert.equal(response.statusCode, 404);
+    assert.deepEqual(JSON.parse(response.body), { error: "Not found" });
+  } finally {
+    await app.close();
+  }
+});
+
+test("public people route rejects invalid pagination before querying data", async () => {
+  const app = await createTestApp();
+
+  try {
+    const response = await app.inject({ method: "GET", url: "/api/people?page=0&pageSize=999" });
+
+    assert.equal(response.statusCode, 400);
+    assert.deepEqual(JSON.parse(response.body), { error: "Invalid pagination" });
+  } finally {
+    await app.close();
+  }
+});
+
+test("external report route requires bearer auth", async () => {
+  const app = await createTestApp();
+
+  try {
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/found-people/reports",
+      headers: { "content-type": "application/json" },
+      payload: JSON.stringify({ fullName: "María Pérez", location: "Hospital Central" }),
+    });
+
+    assert.equal(response.statusCode, 401);
+    assert.deepEqual(JSON.parse(response.body), { error: "Unauthorized" });
+  } finally {
+    await app.close();
+  }
+});
+
+test("external report route requires JSON content", async () => {
+  const app = await createTestApp();
+
+  try {
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/found-people/reports",
+      headers: { authorization: "Bearer external-secret", "content-type": "text/plain" },
+      payload: "not-json",
+    });
+
+    assert.equal(response.statusCode, 415);
+    assert.deepEqual(JSON.parse(response.body), { error: "Content-Type must be application/json" });
+  } finally {
+    await app.close();
+  }
+});
+
+test("external report route rejects invalid JSON payloads before writing", async () => {
+  const app = await createTestApp();
+
+  try {
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/found-people/reports",
+      headers: { authorization: "Bearer external-secret", "content-type": "application/json" },
+      payload: JSON.stringify({ fullName: "A" }),
+    });
+
+    assert.equal(response.statusCode, 400);
+    assert.deepEqual(JSON.parse(response.body), { error: "Invalid report payload" });
+  } finally {
+    await app.close();
+  }
+});
 
 test("telegram webhook responds to /ayuda by sending a Telegram message", async () => {
   const telegram = mockTelegramApi();

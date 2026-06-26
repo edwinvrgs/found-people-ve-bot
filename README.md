@@ -235,13 +235,4 @@ Before opening a PR:
 
 Source-related changes should include public links and explain why they represent found/localized-person records.
 
-## Open-source readiness
-
-Still recommended before broader contributor activity:
-
-- License file
-- `CONTRIBUTING.md`
-- Security reporting policy
-- More route/service tests
-
-Until a license is added, do not assume reuse rights beyond normal GitHub viewing/forking behavior.
+See [CONTRIBUTING.md](./CONTRIBUTING.md), [SECURITY.md](./SECURITY.md), and [LICENSE](./LICENSE) for project policies.
