@@ -12,9 +12,11 @@ The project collects public, source-linked records from public lists, citizen re
 - Public API base URL: <https://bot-production-ed0b.up.railway.app>
 - Main medical-transcription source: <https://github.com/ecrespo/OCR-data_Terremoto_Venezuela_24062026>
 
-## Current data sources
+## Credits and current data sources
 
-The ingestion pipeline currently reads found/localized-person records from:
+This project only centralizes searchable, source-linked records. Credit for the underlying public data belongs to the people and projects gathering, transcribing, publishing, and verifying information during the emergency.
+
+Current sources:
 
 - Public OCR/transcribed medical lists: <https://github.com/ecrespo/OCR-data_Terremoto_Venezuela_24062026>
 - VenezuelaTeBusca: <https://venezuelatebusca.com/>
