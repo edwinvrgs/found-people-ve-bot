@@ -19,10 +19,9 @@ Current sources:
 - <https://github.com/ecrespo/OCR-data_Terremoto_Venezuela_24062026>
 - <https://venezuelatebusca.com/>
 - <https://desaparecidosterremotovenezuela.com/>
+- <https://encuentralos.tecnosoft.dev/>
 - Citizen reports submitted through the Telegram bot
 - External reports submitted through the authenticated public API
-
-The scraper also uses <https://venezuela.tiltely.com/> as a source directory. Links that are not structured found/localized-person sources are intentionally skipped.
 
 ## Features
 
@@ -146,7 +145,7 @@ npm run ingest:found-people            # dry-run; writes artifact only
 npm run ingest:found-people -- --write # scrape and upsert into database
 ```
 
-The scraper ingests found/localized sources directly from the known source URLs, paginates safely, extracts `documentId` when available, masks public document references in `relevantInfo`, and emits aggregate-only analytics. It does not depend on the Tiltely index page to discover upstream sources.
+The scraper ingests found/localized sources directly from the known source URLs, paginates safely, extracts `documentId` when available, masks public document references in `relevantInfo`, and emits aggregate-only analytics.
 
 SocialCrawl ingestion is disabled by default. To run it intentionally, set `FOUND_PEOPLE_SOCIALCRAWL_ENABLED=true`; provider calls are bounded by `FOUND_PEOPLE_PROVIDER_TIMEOUT_MS`.
 

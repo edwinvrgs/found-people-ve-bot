@@ -157,7 +157,7 @@ async function scrapeVenezuelaTeBusca(enabled: boolean, signal?: AbortSignal) {
 
   const candidates: SearchCandidateInput[] = [];
   const errors: string[] = [];
-  const pageLimit = configuredLimit("TILTELY_VENEZUELA_TE_BUSCA_PAGES", DEFAULT_VENEZUELA_TE_BUSCA_PAGES);
+  const pageLimit = configuredLimit("VENEZUELA_TE_BUSCA_PAGES", DEFAULT_VENEZUELA_TE_BUSCA_PAGES);
   const seenPageSignatures = new Set<string>();
 
   for (let page = 1; page <= pageLimit; page += 1) {
@@ -221,8 +221,8 @@ export async function scrapeApiSource(source: Extract<SourceName, "desaparecidos
 
   const candidates: SearchCandidateInput[] = [];
   const errors: string[] = [];
-  const pageLimit = configuredLimit(source === "encuentralos" ? "TILTELY_ENCUENTRALOS_API_PAGES" : "TILTELY_DESAPARECIDOS_API_PAGES", DEFAULT_API_PAGES);
-  const pageDelayMs = configuredLimit("TILTELY_API_PAGE_DELAY_MS", DEFAULT_API_PAGE_DELAY_MS);
+  const pageLimit = configuredLimit(source === "encuentralos" ? "ENCUENTRALOS_API_PAGES" : "DESAPARECIDOS_TERREMOTO_API_PAGES", DEFAULT_API_PAGES);
+  const pageDelayMs = configuredLimit("FOUND_PERSON_SOURCES_PAGE_DELAY_MS", DEFAULT_API_PAGE_DELAY_MS);
   const seenPageSignatures = new Set<string>();
 
   for (let page = 1; page <= pageLimit; page += 1) {

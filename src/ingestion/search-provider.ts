@@ -4,7 +4,7 @@ import { buildFoundPersonSocialQueries } from "./queries.js";
 import { extractFoundPerson, looksLikePersonName } from "./extract-person.js";
 import { searchConsolidatedCandidates } from "./consolidated-source.js";
 import { extractDocumentId, sanitizeRelevantInfo } from "./sanitize.js";
-import { searchKnownFoundPersonSources } from "./tiltely-source.js";
+import { searchKnownFoundPersonSources } from "./known-sources.js";
 import type { FoundPersonCandidate } from "./types.js";
 
 export type SearchCandidateInput = FoundPersonCandidate & {
