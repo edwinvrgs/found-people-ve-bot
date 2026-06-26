@@ -10,6 +10,12 @@ Telegram bot and public API for consulting people reported as found or located a
 - Public API: <https://bot-production-ed0b.up.railway.app>
 - Source code: <https://github.com/edwinvrgs/found-people-ve-bot>
 
+## Project policies
+
+- License: [MIT](./LICENSE)
+- Contributing: [CONTRIBUTING.md](./CONTRIBUTING.md)
+- Security reporting: [SECURITY.md](./SECURITY.md)
+
 ## Data sources and credits
 
 This project centralizes searchable, source-linked records. Credit for the underlying public data belongs to the people and projects gathering, transcribing, publishing, and verifying information during the emergency.

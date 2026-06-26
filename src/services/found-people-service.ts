@@ -47,6 +47,11 @@ export type CitizenReportInput = {
   reporter: Record<string, unknown>;
 };
 
+export type ExternalReportOptions = {
+  idempotencyKey?: string;
+  publicBaseUrl: string;
+};
+
 export function listPublicPeople(page: number, pageSize: number) {
   return listPeople(page, pageSize);
 }
@@ -112,7 +117,7 @@ export async function createCitizenReport(input: CitizenReportInput) {
   return person;
 }
 
-export async function createExternalReport(payload: ExternalReportInput, options: { idempotencyKey?: string; publicBaseUrl: string }) {
+export function buildExternalReportUpsertInput(payload: ExternalReportInput, options: ExternalReportOptions): UpsertPersonInput {
   const idempotencyKey = options.idempotencyKey?.trim().slice(0, 120) ?? "";
   const stableHashInput = idempotencyKey || JSON.stringify({ fullName: payload.fullName, location: payload.location, sourceUrl: payload.sourceUrl ?? null });
   const reportHash = createHash("sha256").update(stableHashInput).digest("hex");
@@ -123,7 +128,7 @@ export async function createExternalReport(payload: ExternalReportInput, options
     payload.sourceUrl ? "fuente enviada por servicio externo" : "sin enlace externo",
   ].filter(Boolean).join(" — ");
 
-  const [person] = await upsertPeople([{
+  return {
     fullName: payload.fullName,
     relevantInfo,
     sourceUrl,
@@ -137,7 +142,11 @@ export async function createExternalReport(payload: ExternalReportInput, options
       submittedSourceUrl: payload.sourceUrl ?? null,
       idempotencyKeyHash: idempotencyKey ? createHash("sha256").update(idempotencyKey).digest("hex") : null,
     },
-  }]);
+  };
+}
+
+export async function createExternalReport(payload: ExternalReportInput, options: ExternalReportOptions) {
+  const [person] = await upsertPeople([buildExternalReportUpsertInput(payload, options)]);
 
   return person;
 }
