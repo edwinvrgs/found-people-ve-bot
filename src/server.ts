@@ -11,21 +11,26 @@ const TELEGRAM_CHAT_LIMIT = { count: 20, windowMs: 60_000 };
 const ADMIN_API_LIMIT = { count: 20, windowMs: 60_000 };
 const EXTERNAL_REPORT_API_LIMIT = { count: 30, windowMs: 60_000 };
 
+const SEARCH_QUERY_MIN_LENGTH = 2;
 const SEARCH_QUERY_MAX_LENGTH = 80;
 const SEARCH_QUERY_SAFE_CHARS = /^[\p{L}\p{M}\d .,'’_-]+$/u;
 
-function normalizeSearchQuery(value: unknown) {
+function normalizeOptionalString(value: unknown) {
   if (typeof value !== "string") return value;
   const normalized = value.normalize("NFKC").replace(/\s+/g, " ").trim();
   return normalized || undefined;
 }
 
+function normalizeSearchQuery(value: unknown) {
+  return normalizeOptionalString(value);
+}
+
 const SafeSearchQuerySchema = z.preprocess(
   normalizeSearchQuery,
   z.string()
-    .min(2)
-    .max(SEARCH_QUERY_MAX_LENGTH)
-    .regex(SEARCH_QUERY_SAFE_CHARS, "Search contains unsupported characters")
+    .min(SEARCH_QUERY_MIN_LENGTH, `Search query must be at least ${SEARCH_QUERY_MIN_LENGTH} characters long`)
+    .max(SEARCH_QUERY_MAX_LENGTH, `Search query must be at most ${SEARCH_QUERY_MAX_LENGTH} characters long`)
+    .regex(SEARCH_QUERY_SAFE_CHARS, "Search query can only contain letters, numbers, spaces, dots, commas, apostrophes, underscores, and hyphens")
     .optional(),
 );
 
@@ -56,15 +61,41 @@ const DeletePersonSchema = z.object({
   sourceUrl: z.string().url().refine((url) => /^https?:\/\//i.test(url), "Only http(s) URLs are allowed"),
 });
 
+const OptionalHttpUrlSchema = z.preprocess(
+  normalizeOptionalString,
+  z.string()
+    .url("Source URL must be a valid URL")
+    .refine((url) => /^https?:\/\//i.test(url), "Source URL must use http or https")
+    .optional(),
+);
+
 const ExternalReportSchema = z.object({
-  fullName: z.string().trim().min(2).max(200),
-  location: z.string().trim().min(2).max(300),
-  sourceUrl: z.string().trim().url().refine((url) => /^https?:\/\//i.test(url), "Only http(s) URLs are allowed").optional(),
-  notes: z.string().trim().max(1000).optional(),
+  fullName: z.string()
+    .trim()
+    .min(2, "Full name must be at least 2 characters long")
+    .max(200, "Full name must be at most 200 characters long"),
+  location: z.string()
+    .trim()
+    .min(2, "Location must be at least 2 characters long")
+    .max(300, "Location must be at most 300 characters long"),
+  sourceUrl: OptionalHttpUrlSchema,
+  notes: z.preprocess(
+    normalizeOptionalString,
+    z.string().max(1000, "Notes must be at most 1000 characters long").optional(),
+  ),
   reporter: z.object({
-    name: z.string().trim().max(120).optional(),
-    contact: z.string().trim().max(200).optional(),
-    service: z.string().trim().max(80).optional(),
+    name: z.preprocess(
+      normalizeOptionalString,
+      z.string().max(120, "Reporter name must be at most 120 characters long").optional(),
+    ),
+    contact: z.preprocess(
+      normalizeOptionalString,
+      z.string().max(200, "Reporter contact must be at most 200 characters long").optional(),
+    ),
+    service: z.preprocess(
+      normalizeOptionalString,
+      z.string().max(80, "Reporter service must be at most 80 characters long").optional(),
+    ),
   }).strict().optional(),
 }).strict();
 
@@ -141,7 +172,7 @@ const server = createServer(async (request, response) => {
       if (limited) return;
 
       const parsed = PeopleQuerySchema.safeParse(Object.fromEntries(url.searchParams));
-      if (!parsed.success) return json(response, 400, { error: "Invalid pagination" });
+      if (!parsed.success) return validationError(response, parsed.error);
       return json(response, 200, await listPeople(parsed.data.page, parsed.data.pageSize));
     }
 
@@ -150,7 +181,7 @@ const server = createServer(async (request, response) => {
       if (limited) return;
 
       const parsed = SearchQuerySchema.safeParse(Object.fromEntries(url.searchParams));
-      if (!parsed.success) return json(response, 400, { error: "Invalid search" });
+      if (!parsed.success) return validationError(response, parsed.error);
       const result = await searchPeople(parsed.data.name, parsed.data.page, parsed.data.pageSize);
       captureSearchMatched({
         surface: "public_api",
@@ -169,7 +200,7 @@ const server = createServer(async (request, response) => {
       if (limited) return;
 
       const parsed = PeopleQuerySchema.safeParse(Object.fromEntries(url.searchParams));
-      if (!parsed.success) return json(response, 400, { error: "Invalid pagination" });
+      if (!parsed.success) return validationError(response, parsed.error);
 
       const { page, pageSize, q } = parsed.data;
       const result = q
@@ -204,10 +235,10 @@ const server = createServer(async (request, response) => {
       const authLimited = applyRateLimit(response, `external-report-auth:${clientKey}:${hashForRateLimit(request.headers.authorization ?? "")}`, EXTERNAL_REPORT_API_LIMIT.count, EXTERNAL_REPORT_API_LIMIT.windowMs);
       if (authLimited) return;
 
-      if (!isJsonRequest(request)) return json(response, 415, { error: "Content-Type must be application/json" });
+      if (!isJsonRequest(request)) return json(response, 415, { error: "Unsupported media type", details: [{ field: "content-type", code: "invalid_content_type", message: "Content-Type must be application/json" }] });
 
       const parsed = ExternalReportSchema.safeParse(await readJson(request, MAX_JSON_BODY_BYTES));
-      if (!parsed.success) return json(response, 400, { error: "Invalid report payload" });
+      if (!parsed.success) return validationError(response, parsed.error, "Invalid request body", "body");
 
       const report = await createExternalReport(parsed.data, request.headers["idempotency-key"]);
       await incrementMetric("external_api_report");
@@ -264,8 +295,8 @@ ${formatAdminPerson(report)}`, adminActionButtons(report.id));
 
     return json(response, 404, { error: "Not found" });
   } catch (error) {
-    if (error instanceof RequestBodyTooLargeError) return json(response, 413, { error: "Request body too large" });
-    if (error instanceof InvalidJsonError) return json(response, 400, { error: "Invalid JSON" });
+    if (error instanceof RequestBodyTooLargeError) return json(response, 413, { error: "Request body too large", maxBytes: MAX_JSON_BODY_BYTES });
+    if (error instanceof InvalidJsonError) return json(response, 400, { error: "Invalid JSON", details: [{ field: "body", code: "invalid_json", message: "Request body must be valid JSON" }] });
     console.error(error instanceof Error ? error.message : error);
     return json(response, 500, { error: "Internal error" });
   }
@@ -1109,6 +1140,76 @@ function applyRateLimit(response: ServerResponse, key: string, limit: number, wi
   response.setHeader("retry-after", String(limited.retryAfterSeconds));
   json(response, 429, { error: "Too many requests", retryAfterSeconds: limited.retryAfterSeconds });
   return true;
+}
+
+function validationError(response: ServerResponse, error: z.ZodError, title = "Invalid query parameters", defaultField = "query") {
+  return json(response, 400, {
+    error: title,
+    details: error.issues.map((issue) => formatValidationIssue(issue, defaultField)),
+  });
+}
+
+function formatValidationIssue(issue: z.core.$ZodIssue, defaultField: string) {
+  const field = issue.path.join(".") || defaultField;
+  return {
+    field,
+    code: issue.code,
+    message: validationIssueMessage(field, issue),
+  };
+}
+
+function validationIssueMessage(field: string, issue: z.core.$ZodIssue) {
+  if (issue.code === "unrecognized_keys") {
+    if (field === "reporter") return "Reporter can only include name, contact, and service";
+    return "Request body can only include fullName, location, sourceUrl, notes, and reporter";
+  }
+
+  if (field === "q") return issue.message;
+  if (field === "page") {
+    if (issue.code === "invalid_type") return "Page must be a valid number";
+    if (issue.code === "too_small") return "Page must be at least 1";
+    if (issue.code === "too_big") return "Page must be at most 500";
+    return "Page is invalid";
+  }
+  if (field === "pageSize") {
+    if (issue.code === "invalid_type") return "Page size must be a valid number";
+    if (issue.code === "too_small") return "Page size must be at least 1";
+    if (issue.code === "too_big") return "Page size must be at most 10";
+    return "Page size is invalid";
+  }
+  if (field === "fullName") {
+    if (issue.code === "invalid_type") return "Full name is required and must be a string";
+    return issue.message;
+  }
+  if (field === "location") {
+    if (issue.code === "invalid_type") return "Location is required and must be a string";
+    return issue.message;
+  }
+  if (field === "sourceUrl") {
+    if (issue.code === "invalid_type") return "Source URL must be a string";
+    return issue.message;
+  }
+  if (field === "notes") {
+    if (issue.code === "invalid_type") return "Notes must be a string";
+    return issue.message;
+  }
+  if (field === "reporter") {
+    if (issue.code === "invalid_type") return "Reporter must be an object";
+    return issue.message;
+  }
+  if (field === "reporter.name") {
+    if (issue.code === "invalid_type") return "Reporter name must be a string";
+    return issue.message;
+  }
+  if (field === "reporter.contact") {
+    if (issue.code === "invalid_type") return "Reporter contact must be a string";
+    return issue.message;
+  }
+  if (field === "reporter.service") {
+    if (issue.code === "invalid_type") return "Reporter service must be a string";
+    return issue.message;
+  }
+  return issue.message;
 }
 
 function clientIp(request: IncomingMessage) {

@@ -16,7 +16,7 @@ The service runs on Railway and uses Railway Postgres as its database.
 GET /health
 GET /api/search?name=Maria&page=1&pageSize=5
 GET /api/people?page=1&pageSize=5
-GET /api/v1/found-people?page=1&pageSize=10
+GET /api/v1/found-people?page=1&pageSize=10&q=Maria
 POST /api/v1/found-people/reports
 POST /api/ingest
 DELETE /api/people
@@ -41,7 +41,7 @@ PUBLIC_BASE_URL=
 ### List found people
 
 ```http
-GET /api/v1/found-people?page=1&pageSize=10
+GET /api/v1/found-people?page=1&pageSize=10&q=Maria
 ```
 
 Response:
@@ -69,9 +69,27 @@ Response:
 Security notes:
 
 - Only public-visible records are returned: `verified` and `citizen_report`. Records marked as `needs_review` or `removed`/hidden are excluded.
+- Optional `q` filters the list using the same name/document search as the bot.
 - Maximum `page`: 500.
 - Maximum `pageSize`: 10.
+- `q` must be 2-80 characters when present. Empty `q` is treated as omitted.
+- `q` may only contain letters, numbers, spaces, dots, commas, apostrophes, underscores, and hyphens.
 - Rate-limited by IP.
+
+Validation errors use a stable JSON shape with English messages:
+
+```json
+{
+  "error": "Invalid query parameters",
+  "details": [
+    {
+      "field": "q",
+      "code": "too_big",
+      "message": "Search query must be at most 80 characters long"
+    }
+  ]
+}
+```
 
 ### Report a found person
 
@@ -121,6 +139,7 @@ Applied safeguards:
 - `sourceUrl`, when provided, must be `http(s)`.
 - Maximum body size: 256 KB.
 - Invalid JSON returns `400`; oversized bodies return `413`.
+- Validation errors return `400` with English field-level details.
 - Rate-limited by IP and token.
 - Notifies the admin for operational review.
 
@@ -171,7 +190,7 @@ ANALYTICS_HASH_SALT=
 
 Privacy notes:
 
-- Searched names, search text, locations, notes, URLs, tokens, and raw IDs are not sent.
+- Telegram/public `/api/search` query text, locations, notes, URLs, tokens, and raw IDs are not sent. External list `q` is normalized, length-limited, character-restricted, and then sent only as validated search metadata.
 - If Telegram provides a `username`, it is used as a readable `distinctId` (`telegram:@username`) and as the `telegramUsername` property in PostHog.
 - If Telegram does not provide a `username`, the Telegram ID is hashed with `ANALYTICS_HASH_SALT` or `TELEGRAM_WEBHOOK_SECRET`.
 - External client IPs/identifiers are only recorded as hashes when applicable.
@@ -194,7 +213,7 @@ External API / ingestion events:
 
 - `found_people_scrape_completed`: internal scraper finished; includes aggregate totals, per-source counts, document-ID counts, duration, dry-run/write flag, and provider error counts. Does not include names, cédulas, URLs, raw records, or secrets.
 - `search_matched`: public `/api/search` returned at least one match; uses a hashed client identifier and contains no query text or raw ID.
-- `external_api_list_requested`: `GET /api/v1/found-people` usage; includes pagination/counts and hashed client ID.
+- `external_api_list_requested`: `GET /api/v1/found-people` usage; includes pagination/counts, hashed client ID, and validated `q` plus length bucket when present.
 - `external_report_created`: report created through `POST /api/v1/found-people/reports`; only flags and hashed client ID.
 
 Identification:
