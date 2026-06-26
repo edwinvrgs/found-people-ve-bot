@@ -2,6 +2,8 @@
 
 Date: 2026-06-26
 
+> Historical note: this audit was written during the initial backend hardening work. Several recommendations have since landed, including Fastify routing, service/repository extraction, CI, Prisma schema validation, regression tests, and open-source readiness docs. Treat this file as context plus remaining follow-up ideas, not as an exact snapshot of current `main`.
+
 ## Executive summary
 
 The bot backend is reliable enough for the emergency MVP, but the repo is becoming public and the backend should be split into clearer layers before more contributors build on it. The highest-risk area is not a single bug; it is the amount of responsibility concentrated in `src/server.ts` and the fact that database DDL currently lives in application boot code.

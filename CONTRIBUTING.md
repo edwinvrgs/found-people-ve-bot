@@ -19,20 +19,39 @@ cp .env.example .env
 npm run db:generate
 ```
 
-Set local environment variables as needed. Use test or local databases only.
+Fill `.env` with local or test values only. Do not use production credentials locally.
+
+Run the app with variables from `.env`:
+
+```bash
+npm run dev:env
+```
+
+Or export the variables yourself and use watch mode:
+
+```bash
+npm run dev
+```
 
 ## Development checks
 
-Run these before opening a PR:
+Run the main verification command before opening a PR:
 
 ```bash
-npm run typecheck
-DATABASE_URL=postgresql://user:pass@localhost:5432/db npm run db:validate
-npm run test:smoke
-npm run security:audit
+npm run verify
 ```
 
-If your change touches database behavior, also validate migrations against a disposable database.
+For database changes, also validate Prisma and migrations against a disposable database:
+
+```bash
+DATABASE_URL=postgresql://user:pass@localhost:5432/db npm run db:validate
+```
+
+For dependency changes, run:
+
+```bash
+npm run security:audit
+```
 
 ## Pull requests
 
