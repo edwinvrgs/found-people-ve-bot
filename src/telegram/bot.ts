@@ -1,4 +1,4 @@
-import { capture, hashIdentifier, identify } from "../analytics.js";
+import { alias, capture, identify } from "../analytics.js";
 import type { FoundPerson, RecordStatus } from "../db.js";
 import { env } from "../config/env.js";
 import { TELEGRAM_CHAT_LIMIT } from "../http/constants.js";
@@ -8,6 +8,7 @@ import { createCitizenReport, getPersonDetails, getStats, listCitizenReports, li
 import { incrementMetric } from "../services/metrics-service.js";
 import { captureSearchMatched, documentSearchLabel } from "../search-analytics.js";
 import { answerCallback, button, editMessage, sendMessage } from "./client.js";
+import { legacyTelegramUsernameDistinctId, telegramAnalyticsProperties, telegramDistinctId } from "./identity.js";
 import type { InlineButton, TelegramUpdate, TelegramUser } from "./types.js";
 import { z } from "zod";
 
@@ -52,38 +53,27 @@ type ReportDraft = { fullName: string; location: string; sourceUrl?: string | nu
 const pendingChatActions = new Map<number, PendingChatAction>();
 const shortPersonIds = new Map<string, { id: string; expiresAt: number }>();
 const PENDING_ACTION_TTL_MS = 15 * 60_000;
-
-function normalizeTelegramUsername(username: string | null | undefined) {
-  const normalized = username?.trim().replace(/^@/, "");
-  return normalized ? `@${normalized.toLowerCase()}` : null;
-}
-
-function telegramDistinctId(chatId: number, user?: TelegramUser) {
-  const username = normalizeTelegramUsername(user?.username);
-  if (username) return `telegram:${username}`;
-  return hashIdentifier(user?.id ?? chatId) ?? "telegram_unknown";
-}
+const identifiedTelegramUsers = new Set<string>();
 
 function telegramEvent(event: string, chatId: number) {
   return event;
 }
 
-function identifyTelegramUser(message: NonNullable<TelegramUpdate["message"]>) {
-  const username = message.from?.username?.trim();
-  if (!username) return;
-  const normalizedUsername = normalizeTelegramUsername(username);
-  if (!normalizedUsername) return;
-  identify(telegramDistinctId(message.chat.id, message.from), {
-    telegramUsername: normalizedUsername,
-    telegramHasUsername: true,
-  });
+function identifyTelegramActor(chatId: number, user?: TelegramUser) {
+  const distinctId = telegramDistinctId(chatId, user);
+  if (identifiedTelegramUsers.has(distinctId)) return;
+
+  identify(distinctId, telegramAnalyticsProperties(chatId, user));
+  identifiedTelegramUsers.add(distinctId);
+
+  const legacyDistinctId = legacyTelegramUsernameDistinctId(user?.username);
+  if (legacyDistinctId && legacyDistinctId !== distinctId) alias(legacyDistinctId, distinctId);
 }
 
 function captureTelegramCommand(message: NonNullable<TelegramUpdate["message"]>, command: string, properties: Record<string, string | number | boolean | null | undefined> = {}) {
   capture("telegram_command", telegramDistinctId(message.chat.id, message.from), {
     command,
-    chatId: hashIdentifier(message.chat.id),
-    userId: hashIdentifier(message.from?.id),
+    ...telegramAnalyticsProperties(message.chat.id, message.from),
     ...properties,
   });
 }
@@ -114,7 +104,7 @@ export async function handleTelegramUpdate(update: TelegramUpdate) {
   }
 
   const text = message.text.trim();
-  identifyTelegramUser(message);
+  identifyTelegramActor(message.chat.id, message.from);
   capture(telegramEvent("message_received", message.chat.id), telegramDistinctId(message.chat.id, message.from), {
     chatType: "direct_or_group",
     isCommand: text.startsWith("/"),
@@ -312,6 +302,8 @@ async function handleCallback(callback: NonNullable<TelegramUpdate["callback_que
     capture(telegramEvent("rate_limited", chatId), telegramDistinctId(chatId, callback.from), { surface: "telegram_callback", retryAfterSeconds: limited.retryAfterSeconds });
     return answerCallback(callback.id, `Intenta de nuevo en ${limited.retryAfterSeconds}s.`);
   }
+
+  identifyTelegramActor(chatId, callback.from);
 
   const messageId = callback.message.message_id;
   const data = callback.data ?? "";
