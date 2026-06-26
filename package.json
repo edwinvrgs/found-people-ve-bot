@@ -16,7 +16,8 @@
     "test:smoke": "npm run test",
     "security:audit": "npm audit --omit=dev",
     "dev:env": "node --env-file=.env --import tsx src/server.ts",
-    "verify": "npm run typecheck && npm test && npm run build"
+    "verify": "npm run typecheck && npm test && npm run build",
+    "audit:duplicates": "tsx src/audit-found-people-duplicates.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.19.3",
