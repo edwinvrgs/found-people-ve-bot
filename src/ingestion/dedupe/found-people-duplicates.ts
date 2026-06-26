@@ -222,7 +222,7 @@ export function buildDedupeMergePlan(rows: DuplicateAuditRow[], options: Duplica
   );
   addHighConfidenceGroups(
     "same_source_url",
-    groupRows(rows.filter((row) => row.sourceUrl), (row) => row.sourceUrl),
+    groupRows(rows.filter((row) => isPersonSpecificSourceUrl(row.sourceUrl)), (row) => row.sourceUrl),
   );
 
   const automaticallyHandledIds = new Set(operations.flatMap((operation) => [operation.canonicalId, ...operation.duplicateIds]));
@@ -280,6 +280,19 @@ function canonicalScore(row: DuplicateAuditRow) {
     + sourcePriority(row)
     + Math.min(500, String(row.relevantInfo ?? "").length)
     + Math.min(100, normalizeName(row.fullName).length);
+}
+
+function isPersonSpecificSourceUrl(sourceUrl: string) {
+  try {
+    const url = new URL(sourceUrl);
+    if (url.hostname === "venezuelatebusca.com") return /^#record=.+/.test(url.hash);
+    if (url.searchParams.get("persona")) return true;
+    if (/\/p\/[A-Za-z0-9_-]+/.test(url.pathname)) return true;
+    if (url.hostname === "github.com" && /^#L\d+/.test(url.hash)) return true;
+    return false;
+  } catch {
+    return false;
+  }
 }
 
 function sourcePriority(row: DuplicateAuditRow) {
