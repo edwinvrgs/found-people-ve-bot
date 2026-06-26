@@ -77,18 +77,18 @@ Prefer `/api/v1/found-people` for external consumers. Older endpoints remain ava
 ### List or search found people
 
 ```http
-GET /api/v1/found-people?page=1&pageSize=10&q=Maria
+GET /api/v1/found-people?page=1&pageSize=10
+GET /api/v1/found-people?name=Maria
+GET /api/v1/found-people?documentId=V12345678
+GET /api/v1/found-people?q=maria+perez
 ```
 
 Query parameters:
 
-| Parameter | Required | Description |
-| --- | --- | --- |
-| `page` | No | Page number, default `1`, maximum `500`. |
-| `pageSize` | No | Page size, default `5`, maximum `10`. |
-| `q` | No | Optional name/document search using the same search behavior as the bot. Empty `q` is treated as omitted. |
-
-`q` must be 2-80 characters when present and may only contain letters, numbers, spaces, dots, commas, apostrophes, underscores, and hyphens.
+- `name` — partial, case-insensitive match on full name only.
+- `documentId` — match on cédula number; accepts any format (`V12345678`, `V-12.345.678`, etc.) and normalizes to digits server-side. Requires 6–9 digits after normalization.
+- `q` — full search: partial, case-insensitive match on both name and cédula simultaneously.
+- `page` / `pageSize` — pagination; max `pageSize` is 100.
 
 Response:
 
@@ -100,7 +100,8 @@ Response:
       "fullName": "Maria Perez",
       "relevantInfo": "Hospital / shelter / public note",
       "sourceUrl": "https://example.com/source",
-      "status": "verified"
+      "status": "verified",
+      "documentId": "12345678"
     }
   ],
   "pagination": {
@@ -114,6 +115,11 @@ Response:
 
 Public visibility rules:
 
+- Only public-visible records are returned: `verified` and `citizen_report`. Records marked as `needs_review` or `removed`/hidden are excluded.
+- `documentId` is returned as raw digits when present, or `null`.
+- Maximum `page`: 500.
+- Maximum `pageSize`: 100.
+- Rate-limited by IP.
 - Returned statuses: `verified`, `citizen_report`.
 - Hidden statuses: `needs_review`, `removed`.
 - `documentId` is never returned in public list/search responses.
