@@ -97,4 +97,23 @@ describe("found-person duplicate audit", () => {
     assert.equal(plan.summary.automaticClusters, 0);
     assert.equal(plan.manualReview[0]?.key, "jose gregorio castellanos rivera");
   });
+
+  it("does not auto-merge shared list page source URLs", () => {
+    const plan = buildDedupeMergePlan([
+      row({ fullName: "Claribel García", sourceUrl: "https://venezuelatebusca.com/?status=found&page=100", raw: { source: "venezuelatebusca" } }),
+      row({ fullName: "Alberto Fuentes", sourceUrl: "https://venezuelatebusca.com/?status=found&page=100", raw: { source: "venezuelatebusca" } }),
+    ]);
+
+    assert.equal(plan.summary.automaticClusters, 0);
+  });
+
+  it("auto-merges person-specific source URLs", () => {
+    const plan = buildDedupeMergePlan([
+      row({ fullName: "Claribel García", sourceUrl: "https://venezuelatebusca.com/?status=found&page=100#record=abc", raw: { source: "venezuelatebusca" } }),
+      row({ fullName: "Claribel Garcia", sourceUrl: "https://venezuelatebusca.com/?status=found&page=100#record=abc", raw: { source: "venezuelatebusca" } }),
+    ]);
+
+    assert.equal(plan.summary.automaticClusters, 1);
+    assert.equal(plan.operations[0]?.reason, "same_source_url");
+  });
 });
