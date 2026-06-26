@@ -19,13 +19,13 @@ describe("external found-person reports", () => {
     const reportHash = createHash("sha256").update(normalizedKey).digest("hex");
 
     assert.equal(input.fullName, "María Pérez");
-    assert.equal(input.status, "citizen_report");
     assert.equal(input.sourceHash, `external-report:${reportHash}`);
     assert.equal(input.sourceUrl, `https://bot.example.com/api/v1/found-people/reports/${reportHash.slice(0, 16)}`);
     assert.match(input.relevantInfo ?? "", /Hospital Central/);
     assert.match(input.relevantInfo ?? "", /Fue localizada/);
     assert.deepEqual(input.raw?.reporter, { service: "partner-api" });
     assert.equal(input.raw?.idempotencyKeyHash, reportHash);
+    assert.equal("status" in input, false);
   });
 
   it("keeps a submitted source URL and omits idempotency hash when no key is provided", () => {

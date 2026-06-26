@@ -1,13 +1,10 @@
 import { prisma } from "./prisma.js";
 
-export type RecordStatus = "verified" | "citizen_report" | "needs_review" | "removed";
-
 export type FoundPerson = {
   id: string;
   fullName: string;
   relevantInfo: string | null;
   sourceUrl: string;
-  status: RecordStatus;
 };
 
 export type FoundPersonExternal = FoundPerson & { documentId: string | null };
@@ -29,6 +26,7 @@ export async function disconnectDatabase() {
 }
 
 const schemaStatements = [
+  "CREATE EXTENSION IF NOT EXISTS pgcrypto",
   "CREATE EXTENSION IF NOT EXISTS pg_trgm",
   "CREATE EXTENSION IF NOT EXISTS unaccent",
   `CREATE TABLE IF NOT EXISTS found_people (
@@ -38,7 +36,6 @@ const schemaStatements = [
     document_id TEXT,
     source_url TEXT NOT NULL CHECK (source_url ~* '^https?://'),
     source_hash TEXT UNIQUE NOT NULL,
-    status TEXT NOT NULL DEFAULT 'verified',
     raw JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -66,33 +63,31 @@ const schemaStatements = [
     END IF;
   END $$`,
   `ALTER TABLE found_people
-    ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'verified',
     ADD COLUMN IF NOT EXISTS document_id TEXT`,
-  `UPDATE found_people
-    SET status = 'citizen_report'
-    WHERE raw->>'provider' = 'telegram_report'
-      AND status = 'verified'`,
+  `DO $$
+  BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'found_people' AND column_name = 'status') THEN
+      DELETE FROM found_people WHERE status IN ('needs_review', 'removed');
+      ALTER TABLE found_people DROP COLUMN status;
+    END IF;
+  END $$`,
   `ALTER TABLE found_people
     ALTER COLUMN full_name SET NOT NULL,
     ALTER COLUMN source_url SET NOT NULL,
-    ALTER COLUMN source_hash SET NOT NULL,
-    ALTER COLUMN status SET NOT NULL`,
+    ALTER COLUMN source_hash SET NOT NULL`,
   `DO $$
   BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'found_people_source_url_http_check') THEN
       ALTER TABLE found_people ADD CONSTRAINT found_people_source_url_http_check CHECK (source_url ~* '^https?://');
     END IF;
-    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'found_people_status_check') THEN
-      ALTER TABLE found_people ADD CONSTRAINT found_people_status_check CHECK (status IN ('verified', 'citizen_report', 'needs_review', 'removed'));
-    END IF;
     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'found_people_document_id_check') THEN
       ALTER TABLE found_people ADD CONSTRAINT found_people_document_id_check CHECK (document_id IS NULL OR document_id ~ '^\\d{6,9}$');
     END IF;
   END $$`,
+  "DROP INDEX IF EXISTS idx_found_people_status",
   "CREATE INDEX IF NOT EXISTS idx_found_people_full_name ON found_people (lower(full_name))",
   "CREATE INDEX IF NOT EXISTS idx_found_people_full_name_trgm ON found_people USING gin (full_name gin_trgm_ops)",
   "CREATE INDEX IF NOT EXISTS idx_found_people_document_id ON found_people (document_id) WHERE document_id IS NOT NULL",
-  "CREATE INDEX IF NOT EXISTS idx_found_people_status ON found_people (status)",
   "CREATE INDEX IF NOT EXISTS idx_found_people_updated_at ON found_people (updated_at DESC)",
   `CREATE TABLE IF NOT EXISTS bot_metrics (
     name TEXT PRIMARY KEY,
@@ -110,11 +105,9 @@ export {
   incrementMetric,
   listPeople,
   listPeopleExternal,
-  listRecentCitizenReports,
   searchPeople,
   searchPeopleByDocument,
   searchPeopleByName,
   searchPeopleExternal,
-  updatePersonStatus,
   upsertPeople,
 } from "./repositories/found-people-repository.js";

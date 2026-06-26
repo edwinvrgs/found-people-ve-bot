@@ -14,13 +14,11 @@ model FoundPerson {
   documentId   String?  @map("document_id")
   sourceUrl    String   @map("source_url")
   sourceHash   String   @unique @map("source_hash")
-  status       String   @default("verified")
   raw          Json     @default("{}")
   createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   @@index([documentId], map: "idx_found_people_document_id")
-  @@index([status], map: "idx_found_people_status")
   @@index([updatedAt(sort: Desc)], map: "idx_found_people_updated_at")
   @@map("found_people")
 }

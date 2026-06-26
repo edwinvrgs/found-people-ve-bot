@@ -1,6 +1,6 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "../prisma.js";
-import type { FoundPerson, FoundPersonExternal, FoundPersonWithMetadata, RecordStatus } from "../db.js";
+import type { FoundPerson, FoundPersonExternal, FoundPersonWithMetadata } from "../db.js";
 
 type CountRow = { count: bigint | number | string };
 
@@ -9,7 +9,6 @@ export type UpsertPersonInput = {
   relevantInfo?: string | null;
   sourceUrl: string;
   sourceHash?: string;
-  status?: RecordStatus;
   documentId?: string | null;
   raw?: Record<string, unknown>;
 };
@@ -19,10 +18,9 @@ export async function listPeople(page: number, pageSize: number) {
   const [items, total] = await Promise.all([
     prisma.$queryRaw<FoundPerson[]>`
       SELECT ${selectColumnsSql()} FROM found_people
-      WHERE status IN ('verified', 'citizen_report')
       ORDER BY lower(full_name) ASC, source_url ASC
       LIMIT ${pageSize} OFFSET ${offset}`,
-    prisma.foundPerson.count({ where: publicVisibleWhere() }),
+    prisma.foundPerson.count(),
   ]);
 
   return pageResult(items, page, pageSize, total);
@@ -58,8 +56,7 @@ export function normalizeDocumentId(value: string | null | undefined) {
 }
 
 function searchWhereSql(nameQuery: string, documentQuery: string | null) {
-  return Prisma.sql`${publicVisibleStatusSql()}
-    AND (
+  return Prisma.sql`(
       unaccent(lower(full_name)) ILIKE unaccent(lower(${nameQuery}))
       OR (
         ${documentQuery}::text IS NOT NULL
@@ -73,19 +70,17 @@ export async function upsertPeople(people: UpsertPersonInput[]) {
 
   for (const person of people) {
     const hash = person.sourceHash ?? await sha256(`${person.sourceUrl}:${person.fullName}`);
-    const status = person.status ?? "verified";
     const documentId = normalizeDocumentId(person.documentId);
     const existing = await findExistingIngestMatch(hash, documentId, person.sourceUrl);
 
     if (existing) {
-      const enriched = enrichExistingPerson(existing, person, { hash, status, documentId });
+      const enriched = enrichExistingPerson(existing, person, { hash, documentId });
       const [row] = await prisma.$queryRaw<FoundPerson[]>`
         UPDATE found_people SET
           full_name = ${enriched.fullName},
           relevant_info = ${enriched.relevantInfo},
           document_id = ${enriched.documentId},
           source_url = ${enriched.sourceUrl},
-          status = ${enriched.status},
           raw = ${JSON.stringify(enriched.raw)}::jsonb,
           updated_at = now()
         WHERE id = ${existing.id}::uuid
@@ -95,14 +90,13 @@ export async function upsertPeople(people: UpsertPersonInput[]) {
     }
 
     const [row] = await prisma.$queryRaw<FoundPerson[]>`
-      INSERT INTO found_people (full_name, relevant_info, document_id, source_url, source_hash, status, raw)
-      VALUES (${person.fullName}, ${person.relevantInfo ?? null}, ${documentId}, ${person.sourceUrl}, ${hash}, ${status}, ${JSON.stringify(person.raw ?? {})}::jsonb)
+      INSERT INTO found_people (full_name, relevant_info, document_id, source_url, source_hash, raw)
+      VALUES (${person.fullName}, ${person.relevantInfo ?? null}, ${documentId}, ${person.sourceUrl}, ${hash}, ${JSON.stringify(person.raw ?? {})}::jsonb)
       ON CONFLICT (source_hash) DO UPDATE SET
         full_name = EXCLUDED.full_name,
         relevant_info = EXCLUDED.relevant_info,
         document_id = COALESCE(EXCLUDED.document_id, found_people.document_id),
         source_url = EXCLUDED.source_url,
-        status = CASE WHEN found_people.status = 'removed' THEN found_people.status ELSE EXCLUDED.status END,
         raw = EXCLUDED.raw,
         updated_at = now()
       RETURNING ${selectColumnsSql()}`;
@@ -120,7 +114,6 @@ type ExistingIngestPerson = FoundPerson & {
 
 type IngestMatchInput = {
   hash: string;
-  status: RecordStatus;
   documentId: string | null;
 };
 
@@ -129,7 +122,6 @@ type EnrichedPerson = {
   relevantInfo: string | null;
   documentId: string | null;
   sourceUrl: string;
-  status: RecordStatus;
   raw: Record<string, unknown>;
 };
 
@@ -164,7 +156,6 @@ export function enrichExistingPerson(existing: ExistingIngestPerson, incoming: U
     relevantInfo: mergeRelevantInfo(existing.relevantInfo, incomingInfo),
     documentId,
     sourceUrl,
-    status: mergeStatus(existing.status, match.status),
     raw: mergeIngestionRaw(existing.raw, incoming.raw ?? {}, {
       sourceHash: match.hash,
       sourceUrl: incoming.sourceUrl,
@@ -190,14 +181,6 @@ function mergeRelevantInfo(existing: string | null, incoming: string | null) {
   if (current.includes(next)) return current;
   if (next.includes(current)) return next;
   return next.length > current.length ? next : current;
-}
-
-function mergeStatus(existing: RecordStatus, incoming: RecordStatus): RecordStatus {
-  if (existing === "removed") return "removed";
-  if (existing === "verified") return "verified";
-  if (incoming === "verified") return "verified";
-  if (existing === "citizen_report") return "citizen_report";
-  return incoming;
 }
 
 function mergeIngestionRaw(existingRaw: Prisma.JsonValue, incomingRaw: Record<string, unknown>, source: { sourceHash: string; sourceUrl: string; documentId: string | null; matchedBy: string }) {
@@ -235,48 +218,10 @@ export async function deletePersonById(id: string) {
     RETURNING ${selectColumnsSql()}`;
 }
 
-export async function updatePersonStatus(id: string, status: RecordStatus) {
-  return prisma.$queryRaw<FoundPerson[]>`
-    UPDATE found_people SET status = ${status}, updated_at = now()
-    WHERE id = ${id}::uuid
-    RETURNING ${selectColumnsSql()}`;
-}
-
 export async function getFoundPeopleStats() {
-  const [result] = await prisma.$queryRaw<Array<{ total: bigint; visible: bigint; citizen_reports: bigint; needs_review: bigint; verified: bigint; removed: bigint }>>`
-    SELECT
-      count(*) AS total,
-      count(*) FILTER (WHERE status IN ('verified', 'citizen_report')) AS visible,
-      count(*) FILTER (WHERE status = 'citizen_report') AS citizen_reports,
-      count(*) FILTER (WHERE status = 'needs_review') AS needs_review,
-      count(*) FILTER (WHERE status = 'verified') AS verified,
-      count(*) FILTER (WHERE status = 'removed') AS removed
-    FROM found_people`;
+  const total = await prisma.foundPerson.count();
   const metrics = await getBotMetrics();
-  return {
-    total: Number(result?.total ?? 0),
-    visible: Number(result?.visible ?? 0),
-    citizenReports: Number(result?.citizen_reports ?? 0),
-    needsReview: Number(result?.needs_review ?? 0),
-    verified: Number(result?.verified ?? 0),
-    removed: Number(result?.removed ?? 0),
-    metrics,
-  };
-}
-
-export async function listRecentCitizenReports(limit: number, status?: RecordStatus) {
-  const statusFilter = status ? Prisma.sql`AND status = ${status}` : Prisma.empty;
-  return prisma.$queryRaw<FoundPersonWithMetadata[]>`
-    SELECT ${selectColumnsSql()},
-           created_at AS "createdAt",
-           updated_at AS "updatedAt",
-           raw->>'provider' AS provider
-    FROM found_people
-    WHERE raw->>'provider' = 'telegram_report'
-      AND status <> 'removed'
-      ${statusFilter}
-    ORDER BY updated_at DESC
-    LIMIT ${limit}`;
+  return { total, metrics };
 }
 
 export async function getPersonById(id: string) {
@@ -307,10 +252,9 @@ export async function listPeopleExternal(page: number, pageSize: number) {
   const [items, total] = await Promise.all([
     prisma.$queryRaw<FoundPersonExternal[]>`
       SELECT ${selectColumnsExternalSql()} FROM found_people
-      WHERE status IN ('verified', 'citizen_report')
       ORDER BY lower(full_name) ASC, source_url ASC
       LIMIT ${pageSize} OFFSET ${offset}`,
-    prisma.foundPerson.count({ where: publicVisibleWhere() }),
+    prisma.foundPerson.count(),
   ]);
   return pageResult(items, page, pageSize, total);
 }
@@ -320,8 +264,7 @@ export async function searchPeopleExternal(search: string, page: number, pageSiz
   const nameQuery = `%${search}%`;
   const documentDigits = normalizeDocumentDigits(search);
   const documentQuery = documentDigits ? `%${documentDigits}%` : null;
-  const where = Prisma.sql`${publicVisibleStatusSql()}
-    AND (
+  const where = Prisma.sql`(
       unaccent(lower(full_name)) ILIKE unaccent(lower(${nameQuery}))
       OR (${documentQuery}::text IS NOT NULL AND document_id LIKE ${documentQuery})
     )`;
@@ -339,8 +282,7 @@ export async function searchPeopleExternal(search: string, page: number, pageSiz
 export async function searchPeopleByName(name: string, page: number, pageSize: number) {
   const offset = (page - 1) * pageSize;
   const nameQuery = `%${name}%`;
-  const where = Prisma.sql`${publicVisibleStatusSql()}
-    AND unaccent(lower(full_name)) ILIKE unaccent(lower(${nameQuery}))`;
+  const where = Prisma.sql`unaccent(lower(full_name)) ILIKE unaccent(lower(${nameQuery}))`;
   const [items, total] = await Promise.all([
     prisma.$queryRaw<FoundPersonExternal[]>`
       SELECT ${selectColumnsExternalSql()} FROM found_people
@@ -355,7 +297,7 @@ export async function searchPeopleByName(name: string, page: number, pageSize: n
 export async function searchPeopleByDocument(digits: string, page: number, pageSize: number) {
   const offset = (page - 1) * pageSize;
   const documentQuery = `%${digits}%`;
-  const where = Prisma.sql`${publicVisibleStatusSql()} AND document_id LIKE ${documentQuery}`;
+  const where = Prisma.sql`document_id LIKE ${documentQuery}`;
   const [items, total] = await Promise.all([
     prisma.$queryRaw<FoundPersonExternal[]>`
       SELECT ${selectColumnsExternalSql()} FROM found_people
@@ -367,20 +309,11 @@ export async function searchPeopleByDocument(digits: string, page: number, pageS
   return pageResult(items, page, pageSize, countValue(total));
 }
 
-function publicVisibleWhere() {
-  return { status: { in: ["verified", "citizen_report"] } };
-}
-
-function publicVisibleStatusSql() {
-  return Prisma.sql`status IN ('verified', 'citizen_report')`;
-}
-
 function selectColumnsSql() {
   return Prisma.sql`id,
     full_name AS "fullName",
     relevant_info AS "relevantInfo",
-    source_url AS "sourceUrl",
-    status AS "status"`;
+    source_url AS "sourceUrl"`;
 }
 
 function selectColumnsExternalSql() {
@@ -388,7 +321,6 @@ function selectColumnsExternalSql() {
     full_name AS "fullName",
     relevant_info AS "relevantInfo",
     source_url AS "sourceUrl",
-    status AS "status",
     document_id AS "documentId"`;
 }
 

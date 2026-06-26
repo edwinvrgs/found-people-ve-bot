@@ -54,7 +54,6 @@ export async function guardTelegramWebhookRequest(request: FastifyRequest, reply
   if (secretError) return json(reply, 401, { error: secretError });
 }
 
-
 function hashForRateLimit(value: string) {
   return createHash("sha256").update(value).digest("hex").slice(0, 16);
 }
