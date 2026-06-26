@@ -1,11 +1,9 @@
-import { ensureSchema } from "./db.js";
 import { env } from "./config/env.js";
 import { createApp } from "./http/app.js";
 import { logger } from "./logger.js";
 import { sweepRateLimitBuckets } from "./rate-limit.js";
 import { shutdownAnalytics } from "./analytics.js";
 
-await ensureSchema();
 setInterval(sweepRateLimitBuckets, 60_000).unref();
 
 const server = createApp();

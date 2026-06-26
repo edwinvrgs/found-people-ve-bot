@@ -38,7 +38,6 @@ export type RunIngestionOptions = {
   progressIntervalMs?: number;
   logger: IngestLogger;
   searchCandidates: (queryLimit: number) => Promise<SearchProviderResult>;
-  ensureSchema?: () => Promise<void>;
   upsertPeople?: (people: NormalizedPerson[]) => Promise<unknown[]>;
 };
 
@@ -80,12 +79,7 @@ export async function runFoundPeopleIngest(options: RunIngestionOptions) {
     progressIntervalMs,
   }, "Found people ingest started");
 
-  if (options.write) {
-    if (!options.ensureSchema || !options.upsertPeople) throw new Error("write mode requires ensureSchema and upsertPeople");
-    logger.info({ event: "ingest_schema_ensure_started" }, "Ensuring database schema before ingest");
-    await options.ensureSchema();
-    logger.info({ event: "ingest_schema_ensure_completed" }, "Database schema ready for ingest");
-  }
+  if (options.write && !options.upsertPeople) throw new Error("write mode requires upsertPeople; run Prisma migrations before ingesting");
 
   logger.info({ event: "ingest_candidate_search_started", queryLimit: options.queryLimit }, "Searching found-person candidates");
   const result = await withProgressLog(

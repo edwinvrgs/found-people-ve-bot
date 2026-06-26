@@ -47,7 +47,6 @@ async function main() {
       ...args,
       logger,
       searchCandidates: searchFoundPersonCandidates,
-      ensureSchema: db?.ensureSchema,
       upsertPeople: db?.upsertPeople,
     });
 
