@@ -56,8 +56,26 @@ function configuredLimit(name: string, fallback: number) {
   return Number.isInteger(value) && value >= 0 ? value : fallback;
 }
 
-function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function throwIfAborted(signal?: AbortSignal) {
+  signal?.throwIfAborted();
+}
+
+function sleep(ms: number, signal?: AbortSignal) {
+  return new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    const timeout = setTimeout(resolve, ms);
+    signal?.addEventListener("abort", () => {
+      clearTimeout(timeout);
+      reject(signal.reason);
+    }, { once: true });
+  });
+}
+
+function isAbortError(error: unknown, signal?: AbortSignal) {
+  return signal?.aborted || (error instanceof Error && error.name === "AbortError");
 }
 
 function retryAfterMs(response: Response) {
@@ -169,7 +187,7 @@ function parseVenezuelaTeBuscaPage(html: string, page: number) {
   return { candidates, hasMore };
 }
 
-async function scrapeVenezuelaTeBusca(enabled: boolean) {
+async function scrapeVenezuelaTeBusca(enabled: boolean, signal?: AbortSignal) {
   if (!enabled) return { candidates: [], errors: [] };
 
   const candidates: SearchCandidateInput[] = [];
@@ -178,12 +196,13 @@ async function scrapeVenezuelaTeBusca(enabled: boolean) {
   const seenPageSignatures = new Set<string>();
 
   for (let page = 1; page <= pageLimit; page += 1) {
+    throwIfAborted(signal);
     const url = new URL(VENEZUELA_TE_BUSCA_URL);
     url.searchParams.set("status", "found");
     url.searchParams.set("page", String(page));
 
     try {
-      const response = await fetch(url, { headers: { Accept: "text/html" } });
+      const response = await fetch(url, { headers: { Accept: "text/html" }, signal });
       if (!response.ok) {
         errors.push(`venezuelatebusca page ${page}: ${response.status}`);
         continue;
@@ -198,6 +217,7 @@ async function scrapeVenezuelaTeBusca(enabled: boolean) {
       candidates.push(...parsed.candidates);
       if (!parsed.hasMore) break;
     } catch (error) {
+      if (isAbortError(error, signal)) throw error;
       errors.push(`venezuelatebusca page ${page}: ${error instanceof Error ? error.message : "unknown error"}`);
     }
   }
@@ -227,7 +247,7 @@ function apiPersonToCandidate(source: Extract<SourceName, "desaparecidos_terremo
   return candidate(source, id, fullName, `${source === "encuentralos" ? "Encuéntralos" : "Desaparecidos Terremoto Venezuela"} · ${fields}`, `${baseUrl}?persona=${encodeURIComponent(id)}`, { id, estado, updatedAt: person.updatedAt ?? null }, [asString(person.descripcion), asString(person.localizadoNota)].join(" "));
 }
 
-async function scrapeApiSource(source: Extract<SourceName, "desaparecidos_terremoto" | "encuentralos">, apiUrl: string, publicUrl: string, enabled: boolean) {
+async function scrapeApiSource(source: Extract<SourceName, "desaparecidos_terremoto" | "encuentralos">, apiUrl: string, publicUrl: string, enabled: boolean, signal?: AbortSignal) {
   if (!enabled) return { candidates: [], errors: [] };
 
   const candidates: SearchCandidateInput[] = [];
@@ -237,7 +257,8 @@ async function scrapeApiSource(source: Extract<SourceName, "desaparecidos_terrem
   const seenPageSignatures = new Set<string>();
 
   for (let page = 1; page <= pageLimit; page += 1) {
-    if (page > 1 && pageDelayMs > 0) await sleep(pageDelayMs);
+    throwIfAborted(signal);
+    if (page > 1 && pageDelayMs > 0) await sleep(pageDelayMs, signal);
 
     const url = new URL(apiUrl);
     url.searchParams.set("page", String(page));
@@ -245,10 +266,10 @@ async function scrapeApiSource(source: Extract<SourceName, "desaparecidos_terrem
     url.searchParams.set("estado", "localizado");
 
     try {
-      let response = await fetch(url, { headers: { Accept: "application/json" } });
+      let response = await fetch(url, { headers: { Accept: "application/json" }, signal });
       if (response.status === 429) {
-        await sleep(retryAfterMs(response));
-        response = await fetch(url, { headers: { Accept: "application/json" } });
+        await sleep(retryAfterMs(response), signal);
+        response = await fetch(url, { headers: { Accept: "application/json" }, signal });
       }
       if (!response.ok) {
         errors.push(`${source} page ${page}: ${response.status}`);
@@ -272,6 +293,7 @@ async function scrapeApiSource(source: Extract<SourceName, "desaparecidos_terrem
       candidates.push(...pageCandidates);
       if (body.totalPages && page >= body.totalPages) break;
     } catch (error) {
+      if (isAbortError(error, signal)) throw error;
       errors.push(`${source} page ${page}: ${error instanceof Error ? error.message : "unknown error"}`);
     }
   }
@@ -279,15 +301,16 @@ async function scrapeApiSource(source: Extract<SourceName, "desaparecidos_terrem
   return { candidates, errors };
 }
 
-export async function searchTiltelyFoundPersonCandidates(): Promise<{ candidates: SearchCandidateInput[]; errors: string[] }> {
+export async function searchTiltelyFoundPersonCandidates(signal?: AbortSignal): Promise<{ candidates: SearchCandidateInput[]; errors: string[] }> {
   const errors: string[] = [];
   let links: TiltelyLink[] = [];
 
   try {
-    const response = await fetch(TILTELY_URL, { headers: { Accept: "text/html" } });
+    const response = await fetch(TILTELY_URL, { headers: { Accept: "text/html" }, signal });
     if (!response.ok) errors.push(`tiltely index: ${response.status}`);
     else links = extractTiltelyLinks(await response.text());
   } catch (error) {
+    if (isAbortError(error, signal)) throw error;
     errors.push(`tiltely index: ${error instanceof Error ? error.message : "unknown error"}`);
   }
 
@@ -298,9 +321,9 @@ export async function searchTiltelyFoundPersonCandidates(): Promise<{ candidates
   const hasEncuentralos = shouldUseKnownSources || hasTiltelySource(links, TILTELY_FOUND_SOURCE_ORIGINS.encuentralos);
 
   const [venezuelaTeBusca, desaparecidos, encuentralos] = await Promise.all([
-    scrapeVenezuelaTeBusca(hasVenezuelaTeBusca),
-    scrapeApiSource("desaparecidos_terremoto", DESAPARECIDOS_API_URL, "https://desaparecidosterremotovenezuela.com/", hasDesaparecidos),
-    scrapeApiSource("encuentralos", ENCUENTRALOS_API_URL, "https://encuentralos.tecnosoft.dev/", hasEncuentralos),
+    scrapeVenezuelaTeBusca(hasVenezuelaTeBusca, signal),
+    scrapeApiSource("desaparecidos_terremoto", DESAPARECIDOS_API_URL, "https://desaparecidosterremotovenezuela.com/", hasDesaparecidos, signal),
+    scrapeApiSource("encuentralos", ENCUENTRALOS_API_URL, "https://encuentralos.tecnosoft.dev/", hasEncuentralos, signal),
   ]);
 
   return {

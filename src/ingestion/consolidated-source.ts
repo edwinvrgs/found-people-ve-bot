@@ -165,15 +165,15 @@ export function consolidatedRowToCandidate(row: ConsolidatedCsvRow): SearchCandi
   };
 }
 
-async function fetchConsolidatedCsv() {
-  const response = await fetch(CONSOLIDATED_CSV_RAW_URL, { headers: { Accept: "text/csv,text/plain" } });
+async function fetchConsolidatedCsv(signal?: AbortSignal) {
+  const response = await fetch(CONSOLIDATED_CSV_RAW_URL, { headers: { Accept: "text/csv,text/plain" }, signal });
   if (!response.ok) throw new Error(`GitHub raw consolidated CSV failed with ${response.status}`);
   return response.text();
 }
 
-export async function searchConsolidatedCandidates(): Promise<{ candidates: SearchCandidateInput[]; errors: string[] }> {
+export async function searchConsolidatedCandidates(signal?: AbortSignal): Promise<{ candidates: SearchCandidateInput[]; errors: string[] }> {
   try {
-    const rows = parseConsolidatedCsv(await fetchConsolidatedCsv());
+    const rows = parseConsolidatedCsv(await fetchConsolidatedCsv(signal));
     return {
       candidates: rows.flatMap((row) => {
         const candidate = consolidatedRowToCandidate(row);
