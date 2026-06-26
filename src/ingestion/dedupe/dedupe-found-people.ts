@@ -122,6 +122,9 @@ async function applyPlan(plan: DedupeMergePlan, appliedBy: string) {
       duplicateRowsRemoved,
       auditRowsInserted,
     };
+  }, {
+    maxWait: 10_000,
+    timeout: 300_000,
   });
 }
 
