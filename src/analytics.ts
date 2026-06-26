@@ -64,6 +64,18 @@ export function identify(distinctId: string, properties: AnalyticsProperties = {
   }
 }
 
+export function alias(distinctId: string, alias: string) {
+  if (!client) return;
+  try {
+    client.alias({
+      distinctId,
+      alias,
+    });
+  } catch (error) {
+    logger.warn({ event: "analytics_alias_failed", error: error instanceof Error ? error.message : "unknown" });
+  }
+}
+
 export async function shutdownAnalytics() {
   try {
     await client?.shutdown();
