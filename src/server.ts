@@ -38,9 +38,7 @@ const PeopleQuerySchema = z.object({
   q: SafeSearchQuerySchema,
 });
 
-const SearchQuerySchema = PeopleQuerySchema.extend({
-  name: z.string().trim().min(2).max(80),
-});
+const TelegramSearchQuerySchema = z.string().trim().min(2).max(80);
 
 const ExternalListQuerySchema = z.object({
   page: z.coerce.number().int().min(1).max(500).default(1),
@@ -178,26 +176,6 @@ server.get("/api/people", async (request, reply) => {
   const parsed = PeopleQuerySchema.safeParse(queryParams(request));
   if (!parsed.success) return json(reply, 400, { error: "Invalid pagination" });
   return json(reply, 200, await listPublicPeople(parsed.data.page, parsed.data.pageSize));
-});
-
-server.get("/api/search", async (request, reply) => {
-  const clientKey = clientIp(request);
-  const limited = applyRateLimit(reply, `public:${clientKey}`, PUBLIC_API_LIMIT.count, PUBLIC_API_LIMIT.windowMs);
-  if (limited) return;
-
-  const parsed = SearchQuerySchema.safeParse(queryParams(request));
-  if (!parsed.success) return json(reply, 400, { error: "Invalid search" });
-  const result = await searchPublicPeople(parsed.data.name, parsed.data.page, parsed.data.pageSize);
-  captureSearchMatched({
-    surface: "public_api",
-    total: result.total,
-    resultCount: result.items.length,
-    page: parsed.data.page,
-    pageSize: parsed.data.pageSize,
-    query: parsed.data.name,
-    distinctId: hashIdentifier(clientKey) ?? "public_api_unknown",
-  });
-  return json(reply, 200, result);
 });
 
 server.get("/api/v1/found-people", async (request, reply) => {
@@ -875,7 +853,7 @@ async function sendPeoplePage(chatId: number, page: number, messageId?: number, 
 }
 
 async function sendSearchResults(chatId: number, query: string, message?: NonNullable<TelegramUpdate["message"]>) {
-  const parsed = SearchQuerySchema.shape.name.safeParse(query);
+  const parsed = TelegramSearchQuerySchema.safeParse(query);
   if (!parsed.success) return sendMessage(chatId, "Escribe al menos 2 caracteres y máximo 80 para buscar. Puedes buscar por nombre o cédula.");
 
   await incrementMetric("telegram_search");
@@ -905,7 +883,7 @@ async function sendSearchResults(chatId: number, query: string, message?: NonNul
   return sendMessage(chatId, text, [[button("🔎 Buscar", "search"), button("📋 Lista", "list:1")]]);
 }
 
-function captureSearchMatched(input: { surface: "telegram" | "public_api"; total: number; resultCount: number; page: number; pageSize: number; query: string; distinctId: string }) {
+function captureSearchMatched(input: { surface: "telegram"; total: number; resultCount: number; page: number; pageSize: number; query: string; distinctId: string }) {
   if (input.total <= 0) return;
   const documentSearch = Boolean(documentSearchLabel(input.query));
   capture("search_matched", input.distinctId, {
