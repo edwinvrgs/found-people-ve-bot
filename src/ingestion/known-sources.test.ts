@@ -101,6 +101,35 @@ describe("Known found-person API pagination", () => {
     assert.equal(result.candidates[0].documentId, "12345678");
   });
 
+  it("does not add the slow-source page delay to Encuentralos offset pagination", async () => {
+    const requestedUrls: string[] = [];
+    const startedAt = Date.now();
+
+    globalThis.fetch = (async (input: Parameters<typeof fetch>[0]) => {
+      requestedUrls.push(String(input));
+      const offset = Number(new URL(String(input)).searchParams.get("offset"));
+      const itemCount = offset === 0 ? 100 : 1;
+      return new Response(JSON.stringify({
+        items: Array.from({ length: itemCount }, (_, index) => ({
+          id: `person-${offset}-${index}`,
+          nombre: "Persona Encontrada",
+          estado: "encontrado",
+        })),
+        total: 101,
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    await scrapeApiSource(
+      "encuentralos",
+      "https://encuentralos.tecnosoft.dev/api/personas",
+      "https://encuentralos.tecnosoft.dev/",
+      true,
+    );
+
+    assert.equal(requestedUrls.length, 2);
+    assert.equal(Date.now() - startedAt < 200, true);
+  });
+
   it("does not burn every page when an API source requires reCAPTCHA", async () => {
     const requestedUrls: string[] = [];
 
