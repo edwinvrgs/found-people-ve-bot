@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { PostHog } from "posthog-node";
+import { logger } from "./logger.js";
 
 const apiKey = process.env.POSTHOG_API_KEY;
 const host = process.env.POSTHOG_HOST ?? "https://us.i.posthog.com";
@@ -43,7 +44,7 @@ export function capture(event: string, distinctId: string, properties: Analytics
       },
     });
   } catch (error) {
-    console.error(JSON.stringify({ level: "warn", event: "analytics_capture_failed", message: error instanceof Error ? error.message : "unknown" }));
+    logger.warn({ event: "analytics_capture_failed", error: error instanceof Error ? error.message : "unknown" });
   }
 }
 
@@ -59,7 +60,7 @@ export function identify(distinctId: string, properties: AnalyticsProperties = {
       properties: cleanProperties(properties),
     });
   } catch (error) {
-    console.error(JSON.stringify({ level: "warn", event: "analytics_identify_failed", message: error instanceof Error ? error.message : "unknown" }));
+    logger.warn({ event: "analytics_identify_failed", error: error instanceof Error ? error.message : "unknown" });
   }
 }
 
@@ -67,7 +68,7 @@ export async function shutdownAnalytics() {
   try {
     await client?.shutdown();
   } catch (error) {
-    console.error(JSON.stringify({ level: "warn", event: "analytics_shutdown_failed", message: error instanceof Error ? error.message : "unknown" }));
+    logger.warn({ event: "analytics_shutdown_failed", error: error instanceof Error ? error.message : "unknown" });
   }
 }
 
