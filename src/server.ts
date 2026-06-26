@@ -650,7 +650,7 @@ async function sendMenu(chatId: number) {
 }
 
 function menuText() {
-  return `🇻🇪 <b>Personas Encontradas VE</b>
+  return `<b>Personas Encontradas 🇻🇪</b>
 
 Este bot ayuda a consultar y reportar personas encontradas tras el terremoto en Venezuela.
 
