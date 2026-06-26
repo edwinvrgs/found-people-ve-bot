@@ -2,7 +2,6 @@ import { createHash } from "node:crypto";
 import { buildFoundPersonSocialQueries } from "./queries.js";
 import { extractFoundPerson, looksLikePersonName } from "./extract-person.js";
 import { searchGcalConsolidatedCandidates } from "./gcal-consolidated-source.js";
-import { searchGithubOcrCandidates } from "./ocr-github-source.js";
 import { extractDocumentId, sanitizeRelevantInfo } from "./sanitize.js";
 import { searchTiltelyFoundPersonCandidates } from "./tiltely-source.js";
 import type { FoundPersonCandidate } from "./types.js";
@@ -230,21 +229,20 @@ async function searchSocialCrawl(queryLimit: number): Promise<SearchProviderResu
 }
 
 export async function searchFoundPersonCandidates(queryLimit = 1): Promise<SearchProviderResult> {
-  const [social, githubOcr, gcalConsolidated, tiltely] = await Promise.all([
+  const [social, gcalConsolidated, tiltely] = await Promise.all([
     searchSocialCrawl(queryLimit),
-    searchGithubOcrCandidates(),
     searchGcalConsolidatedCandidates(),
     searchTiltelyFoundPersonCandidates(),
   ]);
 
   const byHash = new Map<string, SearchCandidateInput>();
-  for (const candidate of [...social.candidates, ...githubOcr.candidates, ...gcalConsolidated.candidates, ...tiltely.candidates]) {
+  for (const candidate of [...social.candidates, ...gcalConsolidated.candidates, ...tiltely.candidates]) {
     byHash.set(candidate.sourceHash, candidate);
   }
 
   return {
     candidates: [...byHash.values()],
-    errors: [...social.errors, ...githubOcr.errors, ...gcalConsolidated.errors, ...tiltely.errors],
+    errors: [...social.errors, ...gcalConsolidated.errors, ...tiltely.errors],
     rejected: social.rejected ?? [],
   };
 }
