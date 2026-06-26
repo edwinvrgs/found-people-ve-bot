@@ -82,11 +82,10 @@ describe("runFoundPeopleIngest", () => {
     }
   });
 
-  it("ensures schema and writes accepted candidates in batches", async () => {
+  it("writes accepted candidates in batches without managing schema", async () => {
     const outputDir = tmpOutputDir();
     const { entries, logger } = captureLogger();
     const batches: unknown[][] = [];
-    let ensured = false;
 
     try {
       const result: SearchProviderResult = {
@@ -105,14 +104,12 @@ describe("runFoundPeopleIngest", () => {
         batchSize: 2,
         logger,
         searchCandidates: async () => result,
-        ensureSchema: async () => { ensured = true; },
         upsertPeople: async (people) => {
           batches.push(people);
           return people.map((person) => ({ person }));
         },
       });
 
-      assert.equal(ensured, true);
       assert.equal(report.counts.upserted, 3);
       assert.deepEqual(batches.map((batch) => batch.length), [2, 1]);
       assert.equal(entries.filter((entry) => entry.details.event === "ingest_db_batch_started").length, 2);
