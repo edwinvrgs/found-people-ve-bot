@@ -1,0 +1,34 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model FoundPerson {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  fullName     String   @map("full_name")
+  relevantInfo String?  @map("relevant_info")
+  documentId   String?  @map("document_id")
+  sourceUrl    String   @map("source_url")
+  sourceHash   String   @unique @map("source_hash")
+  status       String   @default("verified")
+  raw          Json     @default("{}")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([documentId], map: "idx_found_people_document_id")
+  @@index([status], map: "idx_found_people_status")
+  @@index([updatedAt(sort: Desc)], map: "idx_found_people_updated_at")
+  @@map("found_people")
+}
+
+model BotMetric {
+  name      String   @id
+  value     BigInt   @default(0)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  @@map("bot_metrics")
+}
