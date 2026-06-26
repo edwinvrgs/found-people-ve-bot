@@ -4,6 +4,7 @@ import { z } from "zod";
 import { deletePersonById, deletePersonBySourceUrl, ensureSchema, getFoundPeopleStats, getPersonById, incrementMetric, listPeople, listPeopleExternal, listRecentCitizenReports, searchPeople, searchPeopleByDocument, searchPeopleByName, searchPeopleExternal, updatePersonStatus, upsertPeople, type FoundPerson, type RecordStatus } from "./db.js";
 import { analyticsEnabled, capture, captureSystem, hashIdentifier, identify, shutdownAnalytics } from "./analytics.js";
 import { rateLimit, sweepRateLimitBuckets } from "./rate-limit.js";
+import { errorDetails, logger } from "./logger.js";
 
 const MAX_JSON_BODY_BYTES = 256 * 1024;
 const PUBLIC_API_LIMIT = { count: 60, windowMs: 60_000 };
@@ -287,7 +288,7 @@ ${formatAdminPerson(report)}`, adminActionButtons(report.id));
   } catch (error) {
     if (error instanceof RequestBodyTooLargeError) return json(response, 413, { error: "Request body too large" });
     if (error instanceof InvalidJsonError) return json(response, 400, { error: "Invalid JSON" });
-    console.error(error instanceof Error ? error.message : error);
+    logger.error({ event: "request_failed", ...errorDetails(error) }, "Unhandled request error");
     return json(response, 500, { error: "Internal error" });
   }
 });
@@ -297,7 +298,7 @@ server.headersTimeout = 16_000;
 server.keepAliveTimeout = 5_000;
 
 server.listen(env.port, () => {
-  console.log(`found-people-ve-bot listening on :${env.port}`);
+  logger.info({ event: "server_started", port: env.port }, `found-people-ve-bot listening on :${env.port}`);
 });
 
 const TelegramUpdateSchema = z.object({

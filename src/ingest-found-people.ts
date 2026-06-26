@@ -1,5 +1,6 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { errorDetails, logger } from "./logger.js";
 import { normalizeDocumentId, sanitizeRelevantInfo } from "./ingest/found-persons/sanitize.js";
 import { searchFoundPersonCandidates, type SearchCandidateInput } from "./ingest/found-persons/search-provider.js";
 
@@ -201,6 +202,6 @@ async function main() {
 }
 
 main().catch((error) => {
-  console.error(error);
+  logger.error({ event: "ingest_failed", ...errorDetails(error) }, "Found people ingest failed");
   process.exit(1);
 });
