@@ -23,13 +23,13 @@ export type DuplicatePersonSummary = {
   updatedAt?: string | Date | null;
 };
 
-export type DedupeMergeReason = "same_document_id" | "same_source_url";
+export type DedupeMergeReason = "same_document_id" | "same_source_url" | "same_normalized_name";
 
 export type DedupeMergeOperation = {
   canonicalId: string;
   duplicateIds: string[];
   reason: DedupeMergeReason;
-  confidence: "high";
+  confidence: "high" | "medium";
   key: string;
   canonical: DuplicatePersonSummary;
   duplicates: DuplicatePersonSummary[];
@@ -107,6 +107,7 @@ export type DuplicateAuditOptions = {
   maxSimilarNamePairs?: number;
   maxFuzzyGroupSize?: number;
   minSimilarity?: number;
+  autoMergeExactNormalizedNames?: boolean;
 };
 
 const DEFAULT_MAX_SAME_NAME_CLUSTERS = 500;
@@ -201,7 +202,7 @@ export function buildDedupeMergePlan(rows: DuplicateAuditRow[], options: Duplica
   const operations: DedupeMergeOperation[] = [];
   const claimedDuplicateIds = new Set<string>();
 
-  const addHighConfidenceGroups = (reason: DedupeMergeReason, groups: Map<string, DuplicateAuditRow[]>) => {
+  const addMergeGroups = (reason: DedupeMergeReason, groups: Map<string, DuplicateAuditRow[]>, confidence: DedupeMergeOperation["confidence"]) => {
     for (const [key, group] of groups) {
       const eligible = group.filter((row) => !claimedDuplicateIds.has(row.id));
       if (eligible.length < 2) continue;
@@ -210,20 +211,29 @@ export function buildDedupeMergePlan(rows: DuplicateAuditRow[], options: Duplica
       const duplicates = eligible.filter((row) => row.id !== canonical.id);
       if (duplicates.length === 0) continue;
 
-      const operation = buildMergeOperation(reason, key, canonical, duplicates);
+      const operation = buildMergeOperation(reason, key, canonical, duplicates, confidence);
       operations.push(operation);
       for (const duplicate of duplicates) claimedDuplicateIds.add(duplicate.id);
     }
   };
 
-  addHighConfidenceGroups(
+  addMergeGroups(
     "same_document_id",
     groupRows(rows.filter((row) => row.documentId), (row) => row.documentId!),
+    "high",
   );
-  addHighConfidenceGroups(
+  addMergeGroups(
     "same_source_url",
     groupRows(rows.filter((row) => isPersonSpecificSourceUrl(row.sourceUrl)), (row) => row.sourceUrl),
+    "high",
   );
+  if (options.autoMergeExactNormalizedNames) {
+    addMergeGroups(
+      "same_normalized_name",
+      groupRows(rows.filter((row) => isSafeExactNameAutoMergeCandidate(row)), (row) => normalizeName(row.fullName)),
+      "medium",
+    );
+  }
 
   const automaticallyHandledIds = new Set(operations.flatMap((operation) => [operation.canonicalId, ...operation.duplicateIds]));
   const manualReview = report.clusters.sameNormalizedName.filter((cluster) =>
@@ -234,8 +244,8 @@ export function buildDedupeMergePlan(rows: DuplicateAuditRow[], options: Duplica
     generatedAt: new Date().toISOString(),
     mode: "dry_run_plan",
     strategy: {
-      automaticReasons: ["same_document_id", "same_source_url"],
-      manualReviewReasons: ["same_normalized_name", "similar_name"],
+      automaticReasons: options.autoMergeExactNormalizedNames ? ["same_document_id", "same_source_url", "same_normalized_name"] : ["same_document_id", "same_source_url"],
+      manualReviewReasons: options.autoMergeExactNormalizedNames ? ["similar_name"] : ["same_normalized_name", "similar_name"],
       destructiveDeletes: false,
       duplicateDisposition: "soft_remove_with_merged_into_metadata",
     },
@@ -249,13 +259,13 @@ export function buildDedupeMergePlan(rows: DuplicateAuditRow[], options: Duplica
   };
 }
 
-function buildMergeOperation(reason: DedupeMergeReason, key: string, canonical: DuplicateAuditRow, duplicates: DuplicateAuditRow[]): DedupeMergeOperation {
+function buildMergeOperation(reason: DedupeMergeReason, key: string, canonical: DuplicateAuditRow, duplicates: DuplicateAuditRow[], confidence: DedupeMergeOperation["confidence"] = "high"): DedupeMergeOperation {
   const mergedRaw = mergeRawMetadata(canonical, duplicates, reason, key);
   return {
     canonicalId: canonical.id,
     duplicateIds: duplicates.map((duplicate) => duplicate.id),
     reason,
-    confidence: "high",
+    confidence,
     key,
     canonical: summarizePerson(canonical),
     duplicates: duplicates.map(summarizePerson),
@@ -268,6 +278,10 @@ function buildMergeOperation(reason: DedupeMergeReason, key: string, canonical: 
       raw: mergedRaw,
     },
   };
+}
+
+function isSafeExactNameAutoMergeCandidate(row: DuplicateAuditRow) {
+  return !row.documentId && Boolean(normalizeName(row.fullName));
 }
 
 function chooseCanonicalPerson(rows: DuplicateAuditRow[]) {

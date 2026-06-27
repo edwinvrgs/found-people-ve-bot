@@ -88,11 +88,50 @@ describe("found-person duplicate audit", () => {
     assert.equal(Array.isArray(plan.operations[0]?.merged.raw.ingestionSources), true);
   });
 
-  it("keeps normalized-name-only duplicates in manual review", () => {
+  it("keeps normalized-name-only duplicates in manual review by default", () => {
     const plan = buildDedupeMergePlan([
       row({ fullName: "José Gregorio Castellanos Rivera", sourceUrl: "https://example.com/a" }),
       row({ fullName: "Jose Gregorio Castellanos Rivera", sourceUrl: "https://example.com/b" }),
     ]);
+
+    assert.equal(plan.summary.automaticClusters, 0);
+    assert.equal(plan.manualReview[0]?.key, "jose gregorio castellanos rivera");
+  });
+
+  it("can plan exact normalized-name merges for reviewed DB cleanup", () => {
+    const canonical = row({
+      id: "00000000-0000-0000-0000-000000000031",
+      fullName: "Norelys Piñerua",
+      relevantInfo: "Hospital A",
+      sourceUrl: "https://example.com/norelys-a",
+      raw: { source: "csv_import" },
+      updatedAt: "2026-06-27T10:00:00.000Z",
+    });
+    const duplicate = row({
+      id: "00000000-0000-0000-0000-000000000032",
+      fullName: "Norelys Pinerua",
+      relevantInfo: "Hospital B, piso 2",
+      sourceUrl: "https://example.com/norelys-b",
+      raw: { source: "csv_import" },
+      updatedAt: "2026-06-27T11:00:00.000Z",
+    });
+
+    const plan = buildDedupeMergePlan([canonical, duplicate], { autoMergeExactNormalizedNames: true });
+
+    assert.equal(plan.summary.automaticClusters, 1);
+    assert.equal(plan.summary.automaticDuplicateRows, 1);
+    assert.equal(plan.operations[0]?.reason, "same_normalized_name");
+    assert.equal(plan.operations[0]?.confidence, "medium");
+    assert.equal(plan.operations[0]?.key, "norelys pinerua");
+    assert.equal(plan.operations[0]?.merged.relevantInfo, "Hospital B, piso 2");
+    assert.equal(plan.manualReview.length, 0);
+  });
+
+  it("does not exact-name auto-merge rows that have document IDs", () => {
+    const plan = buildDedupeMergePlan([
+      row({ fullName: "José Gregorio Castellanos Rivera", documentId: "11111111", sourceUrl: "https://example.com/a" }),
+      row({ fullName: "Jose Gregorio Castellanos Rivera", documentId: "22222222", sourceUrl: "https://example.com/b" }),
+    ], { autoMergeExactNormalizedNames: true });
 
     assert.equal(plan.summary.automaticClusters, 0);
     assert.equal(plan.manualReview[0]?.key, "jose gregorio castellanos rivera");

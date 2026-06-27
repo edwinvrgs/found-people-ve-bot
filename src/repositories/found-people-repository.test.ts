@@ -75,6 +75,27 @@ describe("ingest enrichment", () => {
     assert.equal((sameUrl.raw.ingestionSources as Array<Record<string, unknown>>)[0]?.matchedBy, "source_url");
   });
 
+  it("matches historical ingestion source aliases to the canonical row", () => {
+    const canonical = ingestPerson({
+      id: "00000000-0000-0000-0000-000000000030",
+      sourceHash: "hash-canonical",
+      sourceUrl: "https://example.com/canonical",
+      raw: {
+        provider: "canonical",
+        ingestionSources: [{
+          sourceHash: "hash-duplicate",
+          sourceUrl: "https://example.com/duplicate",
+          documentId: "12345678",
+        }],
+      },
+    });
+    const cache = new IngestMatchCache([canonical]);
+
+    assert.equal(cache.find({ hash: "hash-duplicate", documentId: null, sourceUrl: "https://example.com/missing" })?.id, canonical.id);
+    assert.equal(cache.find({ hash: "missing", documentId: null, sourceUrl: "https://example.com/duplicate" })?.id, canonical.id);
+    assert.equal(cache.find({ hash: "missing", documentId: "12345678", sourceUrl: "https://example.com/missing" })?.id, canonical.id);
+  });
+
   it("prefers source hash over document and URL matches in the batch cache", () => {
     const hashMatch = ingestPerson({ id: "00000000-0000-0000-0000-000000000011", sourceHash: "hash-incoming", documentId: "11111111", sourceUrl: "https://example.com/hash" });
     const documentMatch = ingestPerson({ id: "00000000-0000-0000-0000-000000000012", sourceHash: "hash-doc", documentId: "12345678", sourceUrl: "https://example.com/doc" });

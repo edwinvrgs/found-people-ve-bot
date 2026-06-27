@@ -14,70 +14,35 @@ export type UpsertPersonInput = {
 };
 
 export async function listPeople(page: number, pageSize: number) {
-  return listPublicRows(Prisma.empty, page, pageSize);
+  const offset = (page - 1) * pageSize;
+  const [items, total] = await Promise.all([
+    prisma.$queryRaw<FoundPerson[]>`
+      SELECT ${selectColumnsSql()} FROM found_people
+      ORDER BY lower(full_name) ASC, source_url ASC
+      LIMIT ${pageSize} OFFSET ${offset}`,
+    prisma.foundPerson.count(),
+  ]);
+
+  return pageResult(items, page, pageSize, total);
 }
 
 export async function searchPeople(search: string, page: number, pageSize: number) {
+  const offset = (page - 1) * pageSize;
   const nameQuery = `%${search}%`;
   const documentDigits = normalizeDocumentDigits(search);
   const documentQuery = documentDigits ? `%${documentDigits}%` : null;
-  return listPublicRows(searchWhereSql(nameQuery, documentQuery), page, pageSize);
-}
-
-async function listPublicRows(where: Prisma.Sql, page: number, pageSize: number) {
-  const offset = (page - 1) * pageSize;
+  const where = searchWhereSql(nameQuery, documentQuery);
   const [items, total] = await Promise.all([
-    prisma.$queryRaw<FoundPerson[]>`${dedupedPublicSelect(selectColumnsSql(), where)}
-      ORDER BY lower("fullName") ASC, "sourceUrl" ASC
+    prisma.$queryRaw<FoundPerson[]>`
+      SELECT ${selectColumnsSql()} FROM found_people
+      WHERE ${where}
+      ORDER BY lower(full_name) ASC, source_url ASC
       LIMIT ${pageSize} OFFSET ${offset}`,
-    countPublicRows(where),
+    prisma.$queryRaw<CountRow[]>`
+      SELECT count(*) AS count FROM found_people WHERE ${where}`,
   ]);
 
-  return pageResult(items, page, pageSize, total);
-}
-
-async function listPublicExternalRows(where: Prisma.Sql, page: number, pageSize: number) {
-  const offset = (page - 1) * pageSize;
-  const [items, total] = await Promise.all([
-    prisma.$queryRaw<FoundPersonExternal[]>`${dedupedPublicSelect(selectColumnsExternalSql(), where)}
-      ORDER BY lower("fullName") ASC, "sourceUrl" ASC
-      LIMIT ${pageSize} OFFSET ${offset}`,
-    countPublicRows(where),
-  ]);
-
-  return pageResult(items, page, pageSize, total);
-}
-
-function dedupedPublicSelect(columns: Prisma.Sql, where: Prisma.Sql) {
-  const filter = where === Prisma.empty ? Prisma.empty : Prisma.sql`WHERE ${where}`;
-  return Prisma.sql`
-    WITH ranked_people AS (
-      SELECT DISTINCT ON (${publicPersonKeySql()}) ${columns}, ${publicPersonKeySql()} AS person_key
-      FROM found_people
-      ${filter}
-      ORDER BY ${publicPersonKeySql()},
-        (document_id IS NOT NULL) DESC,
-        length(coalesce(relevant_info, '')) DESC,
-        updated_at DESC,
-        source_url ASC
-    )
-    SELECT * FROM ranked_people`;
-}
-
-async function countPublicRows(where: Prisma.Sql) {
-  const filter = where === Prisma.empty ? Prisma.empty : Prisma.sql`WHERE ${where}`;
-  const total = await prisma.$queryRaw<CountRow[]>`
-    SELECT count(*) AS count
-    FROM (
-      SELECT DISTINCT ${publicPersonKeySql()} AS person_key
-      FROM found_people
-      ${filter}
-    ) deduped_people`;
-  return countValue(total);
-}
-
-function publicPersonKeySql() {
-  return Prisma.sql`COALESCE(NULLIF(document_id, ''), btrim(regexp_replace(unaccent(lower(full_name)), '[[:space:]]+', ' ', 'g')))`;
+  return pageResult(items, page, pageSize, countValue(total));
 }
 
 export function normalizeDocumentDigits(value: string) {
@@ -274,7 +239,35 @@ export class IngestMatchCache {
     setIfAllowed(this.bySourceHash, row.sourceHash, row, overwrite);
     if (row.documentId) setIfAllowed(this.byDocumentId, row.documentId, row, overwrite);
     setIfAllowed(this.bySourceUrl, row.sourceUrl, row, overwrite);
+
+    for (const source of ingestionSourceAliases(row.raw)) {
+      if (source.sourceHash) setIfAllowed(this.bySourceHash, source.sourceHash, row, overwrite);
+      if (source.documentId) setIfAllowed(this.byDocumentId, source.documentId, row, overwrite);
+      if (source.sourceUrl) setIfAllowed(this.bySourceUrl, source.sourceUrl, row, overwrite);
+    }
   }
+}
+
+type IngestionSourceAlias = {
+  sourceHash?: string;
+  documentId?: string;
+  sourceUrl?: string;
+};
+
+function ingestionSourceAliases(raw: Prisma.JsonValue): IngestionSourceAlias[] {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return [];
+  const sources = (raw as Record<string, unknown>).ingestionSources;
+  if (!Array.isArray(sources)) return [];
+
+  return sources.flatMap((source): IngestionSourceAlias[] => {
+    if (!source || typeof source !== "object" || Array.isArray(source)) return [];
+    const record = source as Record<string, unknown>;
+    return [{
+      ...(typeof record.sourceHash === "string" && record.sourceHash ? { sourceHash: record.sourceHash } : {}),
+      ...(typeof record.documentId === "string" && record.documentId ? { documentId: record.documentId } : {}),
+      ...(typeof record.sourceUrl === "string" && record.sourceUrl ? { sourceUrl: record.sourceUrl } : {}),
+    }];
+  });
 }
 
 function setIfAllowed(map: Map<string, ExistingIngestPerson>, key: string, row: ExistingIngestPerson, overwrite: boolean) {
@@ -290,6 +283,8 @@ async function prefetchExistingIngestMatches(people: PreparedUpsertPerson[]) {
   const filters: Prisma.Sql[] = [Prisma.sql`source_hash IN (${Prisma.join(sourceHashes)})`];
   if (documentIds.length > 0) filters.push(Prisma.sql`document_id IN (${Prisma.join(documentIds)})`);
   filters.push(Prisma.sql`source_url IN (${Prisma.join(sourceUrls)})`);
+  filters.push(...sourceHashes.map((sourceHash) => Prisma.sql`raw->'ingestionSources' @> ${JSON.stringify([{ sourceHash }])}::jsonb`));
+  filters.push(...sourceUrls.map((sourceUrl) => Prisma.sql`raw->'ingestionSources' @> ${JSON.stringify([{ sourceUrl }])}::jsonb`));
 
   const rows = await prisma.$queryRaw<ExistingIngestPerson[]>`
     SELECT ${selectIngestMatchColumnsSql()}
@@ -410,10 +405,19 @@ export async function getBotMetrics() {
 }
 
 export async function listPeopleExternal(page: number, pageSize: number) {
-  return listPublicExternalRows(Prisma.empty, page, pageSize);
+  const offset = (page - 1) * pageSize;
+  const [items, total] = await Promise.all([
+    prisma.$queryRaw<FoundPersonExternal[]>`
+      SELECT ${selectColumnsExternalSql()} FROM found_people
+      ORDER BY lower(full_name) ASC, source_url ASC
+      LIMIT ${pageSize} OFFSET ${offset}`,
+    prisma.foundPerson.count(),
+  ]);
+  return pageResult(items, page, pageSize, total);
 }
 
 export async function searchPeopleExternal(search: string, page: number, pageSize: number) {
+  const offset = (page - 1) * pageSize;
   const nameQuery = `%${search}%`;
   const documentDigits = normalizeDocumentDigits(search);
   const documentQuery = documentDigits ? `%${documentDigits}%` : null;
@@ -421,19 +425,45 @@ export async function searchPeopleExternal(search: string, page: number, pageSiz
       unaccent(lower(full_name)) ILIKE unaccent(lower(${nameQuery}))
       OR (${documentQuery}::text IS NOT NULL AND document_id LIKE ${documentQuery})
     )`;
-  return listPublicExternalRows(where, page, pageSize);
+  const [items, total] = await Promise.all([
+    prisma.$queryRaw<FoundPersonExternal[]>`
+      SELECT ${selectColumnsExternalSql()} FROM found_people
+      WHERE ${where}
+      ORDER BY lower(full_name) ASC, source_url ASC
+      LIMIT ${pageSize} OFFSET ${offset}`,
+    prisma.$queryRaw<CountRow[]>`SELECT count(*) AS count FROM found_people WHERE ${where}`,
+  ]);
+  return pageResult(items, page, pageSize, countValue(total));
 }
 
 export async function searchPeopleByName(name: string, page: number, pageSize: number) {
+  const offset = (page - 1) * pageSize;
   const nameQuery = `%${name}%`;
   const where = Prisma.sql`unaccent(lower(full_name)) ILIKE unaccent(lower(${nameQuery}))`;
-  return listPublicExternalRows(where, page, pageSize);
+  const [items, total] = await Promise.all([
+    prisma.$queryRaw<FoundPersonExternal[]>`
+      SELECT ${selectColumnsExternalSql()} FROM found_people
+      WHERE ${where}
+      ORDER BY lower(full_name) ASC, source_url ASC
+      LIMIT ${pageSize} OFFSET ${offset}`,
+    prisma.$queryRaw<CountRow[]>`SELECT count(*) AS count FROM found_people WHERE ${where}`,
+  ]);
+  return pageResult(items, page, pageSize, countValue(total));
 }
 
 export async function searchPeopleByDocument(digits: string, page: number, pageSize: number) {
+  const offset = (page - 1) * pageSize;
   const documentQuery = `%${digits}%`;
   const where = Prisma.sql`document_id LIKE ${documentQuery}`;
-  return listPublicExternalRows(where, page, pageSize);
+  const [items, total] = await Promise.all([
+    prisma.$queryRaw<FoundPersonExternal[]>`
+      SELECT ${selectColumnsExternalSql()} FROM found_people
+      WHERE ${where}
+      ORDER BY lower(full_name) ASC, source_url ASC
+      LIMIT ${pageSize} OFFSET ${offset}`,
+    prisma.$queryRaw<CountRow[]>`SELECT count(*) AS count FROM found_people WHERE ${where}`,
+  ]);
+  return pageResult(items, page, pageSize, countValue(total));
 }
 
 function selectColumnsSql() {

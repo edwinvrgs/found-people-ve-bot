@@ -10,6 +10,7 @@ type Args = {
   planPath?: string;
   apply: boolean;
   appliedBy: string;
+  autoMergeExactNames: boolean;
 };
 
 function parseArgs(): Args {
@@ -24,6 +25,7 @@ function parseArgs(): Args {
     planPath: readValue("--plan"),
     apply: args.includes("--apply"),
     appliedBy: readValue("--applied-by", process.env.USER ?? "unknown")!,
+    autoMergeExactNames: args.includes("--auto-merge-exact-names"),
   };
 }
 
@@ -31,7 +33,7 @@ async function main() {
   const args = parseArgs();
   mkdirSync(args.outputDir, { recursive: true });
 
-  const plan = args.planPath ? readPlan(args.planPath) : await generatePlan();
+  const plan = args.planPath ? readPlan(args.planPath) : await generatePlan({ autoMergeExactNames: args.autoMergeExactNames });
   const planPath = args.planPath ?? writePlan(args.outputDir, plan);
 
   if (!args.apply) {
@@ -49,7 +51,7 @@ async function main() {
   console.log(JSON.stringify({ mode: "applied", planPath, ...result }, null, 2));
 }
 
-async function generatePlan() {
+async function generatePlan(options: { autoMergeExactNames: boolean }) {
   const rows = await prisma.$queryRaw<Array<{
     id: string;
     full_name: string;
@@ -87,7 +89,7 @@ async function generatePlan() {
     raw: row.raw,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
-  })));
+  })), { autoMergeExactNormalizedNames: options.autoMergeExactNames });
 }
 
 function readPlan(planPath: string): DedupeMergePlan {
