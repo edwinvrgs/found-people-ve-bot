@@ -8,7 +8,7 @@ export type TelegramUser = {
 export type TelegramUpdate = {
   message?: {
     message_id: number;
-    chat: { id: number };
+    chat: { id: number; type?: string };
     from?: TelegramUser;
     text?: string;
   };
@@ -17,7 +17,7 @@ export type TelegramUpdate = {
     from?: TelegramUser;
     data?: string;
     message?: {
-      chat: { id: number };
+      chat: { id: number; type?: string };
       message_id: number;
     };
   };
