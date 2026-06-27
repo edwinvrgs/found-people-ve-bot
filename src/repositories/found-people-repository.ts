@@ -14,35 +14,70 @@ export type UpsertPersonInput = {
 };
 
 export async function listPeople(page: number, pageSize: number) {
+  return listPublicRows(Prisma.empty, page, pageSize);
+}
+
+export async function searchPeople(search: string, page: number, pageSize: number) {
+  const nameQuery = `%${search}%`;
+  const documentDigits = normalizeDocumentDigits(search);
+  const documentQuery = documentDigits ? `%${documentDigits}%` : null;
+  return listPublicRows(searchWhereSql(nameQuery, documentQuery), page, pageSize);
+}
+
+async function listPublicRows(where: Prisma.Sql, page: number, pageSize: number) {
   const offset = (page - 1) * pageSize;
   const [items, total] = await Promise.all([
-    prisma.$queryRaw<FoundPerson[]>`
-      SELECT ${selectColumnsSql()} FROM found_people
-      ORDER BY lower(full_name) ASC, source_url ASC
+    prisma.$queryRaw<FoundPerson[]>`${dedupedPublicSelect(selectColumnsSql(), where)}
+      ORDER BY lower("fullName") ASC, "sourceUrl" ASC
       LIMIT ${pageSize} OFFSET ${offset}`,
-    prisma.foundPerson.count(),
+    countPublicRows(where),
   ]);
 
   return pageResult(items, page, pageSize, total);
 }
 
-export async function searchPeople(search: string, page: number, pageSize: number) {
+async function listPublicExternalRows(where: Prisma.Sql, page: number, pageSize: number) {
   const offset = (page - 1) * pageSize;
-  const nameQuery = `%${search}%`;
-  const documentDigits = normalizeDocumentDigits(search);
-  const documentQuery = documentDigits ? `%${documentDigits}%` : null;
-  const where = searchWhereSql(nameQuery, documentQuery);
   const [items, total] = await Promise.all([
-    prisma.$queryRaw<FoundPerson[]>`
-      SELECT ${selectColumnsSql()} FROM found_people
-      WHERE ${where}
-      ORDER BY lower(full_name) ASC, source_url ASC
+    prisma.$queryRaw<FoundPersonExternal[]>`${dedupedPublicSelect(selectColumnsExternalSql(), where)}
+      ORDER BY lower("fullName") ASC, "sourceUrl" ASC
       LIMIT ${pageSize} OFFSET ${offset}`,
-    prisma.$queryRaw<CountRow[]>`
-      SELECT count(*) AS count FROM found_people WHERE ${where}`,
+    countPublicRows(where),
   ]);
 
-  return pageResult(items, page, pageSize, countValue(total));
+  return pageResult(items, page, pageSize, total);
+}
+
+function dedupedPublicSelect(columns: Prisma.Sql, where: Prisma.Sql) {
+  const filter = where === Prisma.empty ? Prisma.empty : Prisma.sql`WHERE ${where}`;
+  return Prisma.sql`
+    WITH ranked_people AS (
+      SELECT DISTINCT ON (${publicPersonKeySql()}) ${columns}, ${publicPersonKeySql()} AS person_key
+      FROM found_people
+      ${filter}
+      ORDER BY ${publicPersonKeySql()},
+        (document_id IS NOT NULL) DESC,
+        length(coalesce(relevant_info, '')) DESC,
+        updated_at DESC,
+        source_url ASC
+    )
+    SELECT * FROM ranked_people`;
+}
+
+async function countPublicRows(where: Prisma.Sql) {
+  const filter = where === Prisma.empty ? Prisma.empty : Prisma.sql`WHERE ${where}`;
+  const total = await prisma.$queryRaw<CountRow[]>`
+    SELECT count(*) AS count
+    FROM (
+      SELECT DISTINCT ${publicPersonKeySql()} AS person_key
+      FROM found_people
+      ${filter}
+    ) deduped_people`;
+  return countValue(total);
+}
+
+function publicPersonKeySql() {
+  return Prisma.sql`COALESCE(NULLIF(document_id, ''), btrim(regexp_replace(unaccent(lower(full_name)), '[[:space:]]+', ' ', 'g')))`;
 }
 
 export function normalizeDocumentDigits(value: string) {
@@ -375,19 +410,10 @@ export async function getBotMetrics() {
 }
 
 export async function listPeopleExternal(page: number, pageSize: number) {
-  const offset = (page - 1) * pageSize;
-  const [items, total] = await Promise.all([
-    prisma.$queryRaw<FoundPersonExternal[]>`
-      SELECT ${selectColumnsExternalSql()} FROM found_people
-      ORDER BY lower(full_name) ASC, source_url ASC
-      LIMIT ${pageSize} OFFSET ${offset}`,
-    prisma.foundPerson.count(),
-  ]);
-  return pageResult(items, page, pageSize, total);
+  return listPublicExternalRows(Prisma.empty, page, pageSize);
 }
 
 export async function searchPeopleExternal(search: string, page: number, pageSize: number) {
-  const offset = (page - 1) * pageSize;
   const nameQuery = `%${search}%`;
   const documentDigits = normalizeDocumentDigits(search);
   const documentQuery = documentDigits ? `%${documentDigits}%` : null;
@@ -395,45 +421,19 @@ export async function searchPeopleExternal(search: string, page: number, pageSiz
       unaccent(lower(full_name)) ILIKE unaccent(lower(${nameQuery}))
       OR (${documentQuery}::text IS NOT NULL AND document_id LIKE ${documentQuery})
     )`;
-  const [items, total] = await Promise.all([
-    prisma.$queryRaw<FoundPersonExternal[]>`
-      SELECT ${selectColumnsExternalSql()} FROM found_people
-      WHERE ${where}
-      ORDER BY lower(full_name) ASC, source_url ASC
-      LIMIT ${pageSize} OFFSET ${offset}`,
-    prisma.$queryRaw<CountRow[]>`SELECT count(*) AS count FROM found_people WHERE ${where}`,
-  ]);
-  return pageResult(items, page, pageSize, countValue(total));
+  return listPublicExternalRows(where, page, pageSize);
 }
 
 export async function searchPeopleByName(name: string, page: number, pageSize: number) {
-  const offset = (page - 1) * pageSize;
   const nameQuery = `%${name}%`;
   const where = Prisma.sql`unaccent(lower(full_name)) ILIKE unaccent(lower(${nameQuery}))`;
-  const [items, total] = await Promise.all([
-    prisma.$queryRaw<FoundPersonExternal[]>`
-      SELECT ${selectColumnsExternalSql()} FROM found_people
-      WHERE ${where}
-      ORDER BY lower(full_name) ASC, source_url ASC
-      LIMIT ${pageSize} OFFSET ${offset}`,
-    prisma.$queryRaw<CountRow[]>`SELECT count(*) AS count FROM found_people WHERE ${where}`,
-  ]);
-  return pageResult(items, page, pageSize, countValue(total));
+  return listPublicExternalRows(where, page, pageSize);
 }
 
 export async function searchPeopleByDocument(digits: string, page: number, pageSize: number) {
-  const offset = (page - 1) * pageSize;
   const documentQuery = `%${digits}%`;
   const where = Prisma.sql`document_id LIKE ${documentQuery}`;
-  const [items, total] = await Promise.all([
-    prisma.$queryRaw<FoundPersonExternal[]>`
-      SELECT ${selectColumnsExternalSql()} FROM found_people
-      WHERE ${where}
-      ORDER BY lower(full_name) ASC, source_url ASC
-      LIMIT ${pageSize} OFFSET ${offset}`,
-    prisma.$queryRaw<CountRow[]>`SELECT count(*) AS count FROM found_people WHERE ${where}`,
-  ]);
-  return pageResult(items, page, pageSize, countValue(total));
+  return listPublicExternalRows(where, page, pageSize);
 }
 
 function selectColumnsSql() {
