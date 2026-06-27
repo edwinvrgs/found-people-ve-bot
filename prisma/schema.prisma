@@ -47,3 +47,20 @@ model BotMetric {
 
   @@map("bot_metrics")
 }
+
+model TelegramChat {
+  id                String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  chatId            BigInt    @unique @map("chat_id")
+  username          String?
+  chatType          String    @default("unknown") @map("chat_type")
+  broadcastOptOut   Boolean   @default(false) @map("broadcast_opt_out")
+  blockedAt         DateTime? @map("blocked_at") @db.Timestamptz(6)
+  firstSeenAt       DateTime  @default(now()) @map("first_seen_at") @db.Timestamptz(6)
+  lastSeenAt        DateTime  @default(now()) @map("last_seen_at") @db.Timestamptz(6)
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([lastSeenAt(sort: Desc)], map: "idx_telegram_chats_last_seen_at")
+  @@index([username], map: "idx_telegram_chats_username")
+  @@map("telegram_chats")
+}

@@ -1,12 +1,14 @@
 import { alias, capture, identify } from "../analytics.js";
 import type { FoundPerson } from "../db.js";
 import { env } from "../config/env.js";
+import { logger, errorDetails } from "../logger.js";
 import { TELEGRAM_CHAT_LIMIT } from "../http/constants.js";
 import { lengthBucket, TelegramSearchQuerySchema } from "../http/schemas.js";
 import { rateLimit } from "../rate-limit.js";
 import { getPersonDetails, getStats, listPublicPeople, removePersonById, removePeopleBySourceUrl, searchPublicPeople } from "../services/found-people-service.js";
 import { incrementMetric } from "../services/metrics-service.js";
 import { captureSearchMatched, documentSearchLabel } from "../search-analytics.js";
+import { upsertTelegramChat, type TelegramChatInput } from "../repositories/telegram-chat-repository.js";
 import { answerCallback, button, editMessage, sendMessage } from "./client.js";
 import { legacyTelegramUsernameDistinctId, telegramAnalyticsProperties, telegramDistinctId } from "./identity.js";
 import type { InlineButton, TelegramUpdate, TelegramUser } from "./types.js";
@@ -15,7 +17,7 @@ import { z } from "zod";
 export const TelegramUpdateSchema = z.object({
   message: z.object({
     message_id: z.number(),
-    chat: z.object({ id: z.number() }),
+    chat: z.object({ id: z.number(), type: z.string().max(32).optional() }),
     from: z.object({
       id: z.number(),
       username: z.string().max(64).optional(),
@@ -34,7 +36,7 @@ export const TelegramUpdateSchema = z.object({
     }).optional(),
     data: z.string().max(64).optional(),
     message: z.object({
-      chat: z.object({ id: z.number() }),
+      chat: z.object({ id: z.number(), type: z.string().max(32).optional() }),
       message_id: z.number(),
     }).optional(),
   }).optional(),
@@ -89,6 +91,7 @@ export async function handleTelegramUpdate(update: TelegramUpdate) {
   if (update.callback_query) return handleCallback(update.callback_query);
 
   const message = update.message;
+  if (message) rememberTelegramChat(message.chat, message.from);
   if (!message?.text) return;
 
   const limited = rateLimit(`chat:${message.chat.id}`, TELEGRAM_CHAT_LIMIT.count, TELEGRAM_CHAT_LIMIT.windowMs);
@@ -152,6 +155,22 @@ export async function handleTelegramUpdate(update: TelegramUpdate) {
   if (text.startsWith("/")) return sendMessage(message.chat.id, "No reconozco ese comando. Usa /ayuda para ver las opciones.");
 
   return sendSearchResults(message.chat.id, text, message);
+}
+
+export function telegramChatInput(chat: { id: number; type?: string }, user?: TelegramUser): TelegramChatInput {
+  const analyticsProperties = telegramAnalyticsProperties(chat.id, user);
+  return {
+    chatId: chat.id,
+    username: typeof analyticsProperties.telegramUsername === "string" ? analyticsProperties.telegramUsername : null,
+    chatType: chat.type ?? "unknown",
+  };
+}
+
+function rememberTelegramChat(chat: { id: number; type?: string }, user?: TelegramUser) {
+  if (process.env.TELEGRAM_CHAT_REGISTRY_DISABLED === "true") return;
+  void upsertTelegramChat(telegramChatInput(chat, user)).catch((error) => {
+    logger.warn({ event: "telegram_chat_upsert_failed", ...errorDetails(error) });
+  });
 }
 
 function getPendingChatAction(chatId: number) {
@@ -249,6 +268,7 @@ async function handleCallback(callback: NonNullable<TelegramUpdate["callback_que
   if (!callback.message) return answerCallback(callback.id);
 
   const chatId = callback.message.chat.id;
+  rememberTelegramChat(callback.message.chat, callback.from);
   const limited = rateLimit(`chat:${chatId}`, TELEGRAM_CHAT_LIMIT.count, TELEGRAM_CHAT_LIMIT.windowMs);
   if (!limited.allowed) {
     capture(telegramEvent("rate_limited", chatId), telegramDistinctId(chatId, callback.from), { surface: "telegram_callback", retryAfterSeconds: limited.retryAfterSeconds });

@@ -17,6 +17,7 @@ async function createTestApp() {
   process.env.ANALYTICS_HASH_SALT = "test-salt";
   process.env.DATABASE_URL = "postgresql://user:pass@localhost:5432/test";
   process.env.EXTERNAL_API_SECRET = "external-secret";
+  process.env.TELEGRAM_CHAT_REGISTRY_DISABLED = "true";
 
   const { createApp } = await import("./app.js");
   return createApp();
