@@ -2,6 +2,7 @@ import fastify from "fastify";
 import { analyticsEnabled, captureSystem, hashIdentifier } from "../analytics.js";
 import { errorDetails, logger } from "../logger.js";
 import { createExternalReport, ingestPeople, listExternalFoundPeople, listPublicPeople, removePeopleBySourceUrl } from "../services/found-people-service.js";
+import { buildFoundPeopleSearchCriteria, searchCriteriaKind } from "../services/found-people-search.js";
 import { incrementMetric } from "../services/metrics-service.js";
 import { publicBaseUrl } from "../config/env.js";
 import { formatAdminPerson, handleTelegramUpdate, notifyAdmin, TelegramUpdateSchema } from "../telegram/bot.js";
@@ -58,20 +59,17 @@ export function createApp() {
     if (!parsed.success) return json(reply, 400, { error: "Invalid pagination" });
 
     const { page, pageSize, q, name, documentId } = parsed.data;
+    const criteria = buildFoundPeopleSearchCriteria({ q, name, documentId });
     const result = await listExternalFoundPeople({ page, pageSize, q, name, documentId });
     await incrementMetric("external_api_list");
+    const searchValue = documentId ?? name ?? q;
     captureSystem("external_api_list_requested", {
       page,
       pageSize,
       total: result.total,
       clientId: hashIdentifier(clientKey),
-      ...(documentId
-        ? { queryType: "document", queryLengthBucket: lengthBucket(documentId.length) }
-        : name
-          ? { queryType: "name", queryLengthBucket: lengthBucket(name.length) }
-          : q
-            ? { queryType: "full_search", queryLengthBucket: lengthBucket(q.length) }
-            : {}),
+      queryType: searchCriteriaKind(criteria),
+      ...(searchValue ? { queryLengthBucket: lengthBucket(searchValue.length) } : {}),
     });
     return json(reply, 200, {
       data: result.items,

@@ -7,12 +7,12 @@ import {
   listPeople,
   listPeopleExternal,
   searchPeople,
-  searchPeopleByDocument,
-  searchPeopleByName,
-  searchPeopleExternal,
+  searchPeopleExternalByCriteria,
+  searchPeopleWithCriteria,
   upsertPeople,
   type UpsertPersonInput,
 } from "../repositories/found-people-repository.js";
+import { buildFoundPeopleSearchCriteria, type FoundPeopleSearchCriteria } from "./found-people-search.js";
 
 export type ExternalFoundPeopleSearch = {
   page: number;
@@ -43,15 +43,18 @@ export function listPublicPeople(page: number, pageSize: number) {
   return listPeople(page, pageSize);
 }
 
-export function searchPublicPeople(name: string, page: number, pageSize: number) {
-  return searchPeople(name, page, pageSize);
+export function searchPublicPeople(query: string, page: number, pageSize: number) {
+  return searchPeople(query, page, pageSize);
+}
+
+export function searchPublicPeopleByCriteria(criteria: FoundPeopleSearchCriteria, page: number, pageSize: number) {
+  return searchPeopleWithCriteria(criteria, page, pageSize);
 }
 
 export function listExternalFoundPeople(input: ExternalFoundPeopleSearch) {
   const { page, pageSize, q, name, documentId } = input;
-  if (documentId) return searchPeopleByDocument(documentId, page, pageSize);
-  if (name) return searchPeopleByName(name, page, pageSize);
-  if (q) return searchPeopleExternal(q, page, pageSize);
+  const criteria = buildFoundPeopleSearchCriteria({ q, name, documentId });
+  if (criteria.name || criteria.documentId) return searchPeopleExternalByCriteria(criteria, page, pageSize);
   return listPeopleExternal(page, pageSize);
 }
 
