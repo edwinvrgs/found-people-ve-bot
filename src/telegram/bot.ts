@@ -1,13 +1,15 @@
+import { randomUUID } from "node:crypto";
 import { alias, capture, identify } from "../analytics.js";
 import type { FoundPerson } from "../db.js";
 import { env } from "../config/env.js";
 import { logger, errorDetails } from "../logger.js";
 import { TELEGRAM_CHAT_LIMIT } from "../http/constants.js";
 import { lengthBucket, TelegramSearchQuerySchema } from "../http/schemas.js";
+import { buildFoundPeopleSearchCriteria, searchCriteriaDisplay, searchCriteriaKind, type FoundPeopleSearchCriteria } from "../services/found-people-search.js";
 import { rateLimit } from "../rate-limit.js";
-import { getPersonDetails, getStats, listPublicPeople, removePersonById, removePeopleBySourceUrl, searchPublicPeople } from "../services/found-people-service.js";
+import { getPersonDetails, getStats, listPublicPeople, removePersonById, removePeopleBySourceUrl, searchPublicPeopleByCriteria } from "../services/found-people-service.js";
 import { incrementMetric } from "../services/metrics-service.js";
-import { captureSearchMatched, documentSearchLabel } from "../search-analytics.js";
+import { captureSearchMatched } from "../search-analytics.js";
 import { upsertTelegramChat, type TelegramChatInput } from "../repositories/telegram-chat-repository.js";
 import { answerCallback, button, editMessage, sendMessage } from "./client.js";
 import { legacyTelegramUsernameDistinctId, telegramAnalyticsProperties, telegramDistinctId } from "./identity.js";
@@ -48,7 +50,9 @@ type PendingChatAction =
 
 const pendingChatActions = new Map<number, PendingChatAction>();
 const shortPersonIds = new Map<string, { id: string; expiresAt: number }>();
+const searchTokens = new Map<string, { criteria: FoundPeopleSearchCriteria; query: string; expiresAt: number }>();
 const PENDING_ACTION_TTL_MS = 15 * 60_000;
+const SEARCH_TOKEN_TTL_MS = 30 * 60_000;
 const identifiedTelegramUsers = new Set<string>();
 
 function telegramEvent(event: string, chatId: number) {
@@ -298,6 +302,14 @@ async function handleCallback(callback: NonNullable<TelegramUpdate["callback_que
     return sendPeoplePage(chatId, Number(listMatch[1]), messageId, callback.from);
   }
 
+  const searchPageMatch = data.match(/^search_page:([^:]+):(\d+)$/);
+  if (searchPageMatch) {
+    await answerCallback(callback.id);
+    const token = resolveSearchToken(searchPageMatch[1]!);
+    if (!token) return editMessage(chatId, messageId, "La búsqueda expiró. Escribe /buscar para buscar de nuevo.", [[button("🔎 Buscar", "search"), button("📋 Lista", "list:1")]]);
+    return sendSearchResults(chatId, token.query, undefined, Number(searchPageMatch[2]), messageId, token.criteria);
+  }
+
   return answerCallback(callback.id);
 }
 
@@ -396,21 +408,31 @@ async function sendPeoplePage(chatId: number, page: number, messageId?: number, 
   const result = await listPublicPeople(page, 5);
   capture(telegramEvent("list_viewed", chatId), telegramDistinctId(chatId, user), { page, total: result.total, resultCount: result.items.length });
   const text = formatPeopleList(result.items, `Personas encontradas (${result.page}/${result.totalPages})`, result.total);
-  const buttons = paginationButtons("list", result.page, result.totalPages);
+  const buttons = paginationButtons(result.page, result.totalPages, (targetPage) => `list:${targetPage}`);
   return messageId ? editMessage(chatId, messageId, text, buttons) : sendMessage(chatId, text, buttons);
 }
 
-async function sendSearchResults(chatId: number, query: string, message?: NonNullable<TelegramUpdate["message"]>) {
+async function sendSearchResults(
+  chatId: number,
+  query: string,
+  message?: NonNullable<TelegramUpdate["message"]>,
+  page = 1,
+  messageId?: number,
+  existingCriteria?: FoundPeopleSearchCriteria,
+) {
   const parsed = TelegramSearchQuerySchema.safeParse(query);
-  if (!parsed.success) return sendMessage(chatId, "Escribe al menos 2 caracteres y máximo 80 para buscar. Puedes buscar por nombre o cédula.");
+  if (!parsed.success) return sendMessage(chatId, "Escribe al menos 2 caracteres y máximo 80 para buscar. Puedes buscar por nombre, apellido o cédula.");
 
-  await incrementMetric("telegram_search");
-  const result = await searchPublicPeople(parsed.data, 1, 5);
-  const documentSearch = documentSearchLabel(parsed.data);
+  const criteria = existingCriteria ?? buildFoundPeopleSearchCriteria({ q: parsed.data });
+  if (!criteria.name && !criteria.documentId) return sendMessage(chatId, "Escribe un nombre, apellido o cédula válida para buscar.");
+
+  if (page === 1) await incrementMetric("telegram_search");
+  const result = await searchPublicPeopleByCriteria(criteria, page, 5);
   const distinctId = telegramDistinctId(chatId, message?.from);
   capture(telegramEvent("search_performed", chatId), distinctId, {
+    page,
     queryLengthBucket: lengthBucket(parsed.data.length),
-    queryType: documentSearch ? "document" : "name",
+    queryType: searchCriteriaKind(criteria),
     resultCount: result.items.length,
     total: result.total,
   });
@@ -418,17 +440,21 @@ async function sendSearchResults(chatId: number, query: string, message?: NonNul
     surface: "telegram",
     total: result.total,
     resultCount: result.items.length,
-    page: 1,
+    page,
     pageSize: 5,
     query: parsed.data,
     distinctId,
   });
-  const displayQuery = documentSearch ?? `“${escapeHtml(parsed.data)}”`;
-  const text = result.total === 0
-    ? `No encontré resultados para ${displayQuery}.\n\nPrueba con menos caracteres o revisa la lista completa.`
-    : formatPeopleList(result.items, `Resultados para ${displayQuery}`, result.total);
 
-  return sendMessage(chatId, text, [[button("🔎 Buscar", "search"), button("📋 Lista", "list:1")]]);
+  const displayQuery = searchCriteriaDisplay(criteria, parsed.data);
+  const escapedDisplayQuery = escapeHtml(displayQuery);
+  const title = result.totalPages > 1 ? `Resultados para ${escapedDisplayQuery} (${result.page}/${result.totalPages})` : `Resultados para ${escapedDisplayQuery}`;
+  const text = result.total === 0
+    ? `No encontré resultados para ${escapedDisplayQuery}.\n\nPrueba con menos caracteres o revisa la lista completa.`
+    : formatPeopleList(result.items, title, result.total);
+  const buttons = searchResultButtons(rememberSearchQuery(parsed.data, criteria), result.page, result.totalPages);
+
+  return messageId ? editMessage(chatId, messageId, text, buttons) : sendMessage(chatId, text, buttons);
 }
 
 
@@ -477,11 +503,42 @@ function formatPeopleList(items: FoundPerson[], title: string, total: number) {
   return truncate(`${escapeHtml(title)}\nTotal: ${total}\n\n${lines.join("\n\n")}`, 3500);
 }
 
-function paginationButtons(prefix: string, page: number, totalPages: number): InlineButton[][] {
+function paginationButtons(page: number, totalPages: number, callbackData: (page: number) => string): InlineButton[][] {
   const row: InlineButton[] = [];
-  if (page > 1) row.push(button("⬅️", `${prefix}:${page - 1}`));
-  if (page < totalPages) row.push(button("➡️", `${prefix}:${page + 1}`));
+  if (page > 1) row.push(button("⬅️", callbackData(page - 1)));
+  if (page < totalPages) row.push(button("➡️", callbackData(page + 1)));
   return row.length ? [row] : [];
+}
+
+export function searchResultButtons(token: string, page: number, totalPages: number): InlineButton[][] {
+  return [
+    ...paginationButtons(page, totalPages, (targetPage) => `search_page:${token}:${targetPage}`),
+    [button("🔎 Buscar", "search"), button("📋 Lista", "list:1")],
+  ];
+}
+
+function rememberSearchQuery(query: string, criteria: FoundPeopleSearchCriteria) {
+  cleanupExpiredSearchTokens();
+  const token = randomUUID().replace(/-/g, "").slice(0, 12);
+  searchTokens.set(token, { query, criteria, expiresAt: Date.now() + SEARCH_TOKEN_TTL_MS });
+  return token;
+}
+
+function resolveSearchToken(token: string) {
+  const cached = searchTokens.get(token);
+  if (!cached) return null;
+  if (cached.expiresAt < Date.now()) {
+    searchTokens.delete(token);
+    return null;
+  }
+  return cached;
+}
+
+function cleanupExpiredSearchTokens() {
+  const now = Date.now();
+  for (const [token, cached] of searchTokens) {
+    if (cached.expiresAt < now) searchTokens.delete(token);
+  }
 }
 
 function truncate(value: string, max: number) {

@@ -62,13 +62,16 @@ GET /api/v1/found-people?page=1&pageSize=10
 GET /api/v1/found-people?name=Maria
 GET /api/v1/found-people?documentId=V12345678
 GET /api/v1/found-people?q=maria+perez
+GET /api/v1/found-people?q=maria+perez+V12345678
+GET /api/v1/found-people?name=Maria%20Perez&documentId=V12345678
 ```
 
 Query parameters:
 
 - `name`: partial, case-insensitive full-name search.
 - `documentId`: Venezuelan ID search; formats like `V12345678` are normalized to digits.
-- `q`: full search across name and cédula.
+- `q`: shared search parser for name, cédula, or combined name + cédula input.
+- `name` + `documentId` can be combined to narrow results to both criteria.
 - `page` / `pageSize`: pagination; max page `500`, max page size `100`.
 
 Response:
@@ -124,12 +127,13 @@ External reports are rate-limited, validated with a strict schema, stored as reg
 - `/ayuda` — show help.
 - `/buscar Nombre Apellido` — search by name.
 - `/buscar V12345678` — search by cédula.
+- `/buscar Nombre Apellido V12345678` — search by combined name + cédula.
 - `/lista` — show paginated list.
 - `/fuentes` — show sources and limitations.
 - `/sugerencia` — send feedback to admin.
 - `/cancelar` — cancel pending flow.
 
-Free-text messages are treated as searches.
+Free-text messages are treated as searches. Search results are paginated when more than one page is available.
 
 Admin-only commands: `/admin_stats`, `/admin_delete`, `/admin_help`.
 

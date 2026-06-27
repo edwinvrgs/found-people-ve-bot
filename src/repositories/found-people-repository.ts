@@ -1,6 +1,7 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "../prisma.js";
 import type { FoundPerson, FoundPersonExternal, FoundPersonWithMetadata } from "../db.js";
+import { buildFoundPeopleSearchCriteria, normalizeDocumentId, type FoundPeopleSearchCriteria } from "../services/found-people-search.js";
 
 type CountRow = { count: bigint | number | string };
 
@@ -27,42 +28,29 @@ export async function listPeople(page: number, pageSize: number) {
 }
 
 export async function searchPeople(search: string, page: number, pageSize: number) {
+  return searchPeopleWithCriteria(buildFoundPeopleSearchCriteria({ q: search }), page, pageSize);
+}
+
+export async function searchPeopleWithCriteria(criteria: FoundPeopleSearchCriteria, page: number, pageSize: number) {
   const offset = (page - 1) * pageSize;
-  const nameQuery = `%${search}%`;
-  const documentDigits = normalizeDocumentDigits(search);
-  const documentQuery = documentDigits ? `%${documentDigits}%` : null;
-  const where = searchWhereSql(nameQuery, documentQuery);
+  const where = searchCriteriaWhereSql(criteria);
   const [items, total] = await Promise.all([
     prisma.$queryRaw<FoundPerson[]>`
       SELECT ${selectColumnsSql()} FROM found_people
       WHERE ${where}
       ORDER BY lower(full_name) ASC, source_url ASC
       LIMIT ${pageSize} OFFSET ${offset}`,
-    prisma.$queryRaw<CountRow[]>`
-      SELECT count(*) AS count FROM found_people WHERE ${where}`,
+    prisma.$queryRaw<CountRow[]>`SELECT count(*) AS count FROM found_people WHERE ${where}`,
   ]);
 
   return pageResult(items, page, pageSize, countValue(total));
 }
 
-export function normalizeDocumentDigits(value: string) {
-  const digits = value.replace(/\D/g, "");
-  return digits.length >= 5 ? digits : null;
-}
-
-export function normalizeDocumentId(value: string | null | undefined) {
-  const digits = (value ?? "").replace(/\D/g, "");
-  return digits.length >= 6 && digits.length <= 9 ? digits : null;
-}
-
-function searchWhereSql(nameQuery: string, documentQuery: string | null) {
-  return Prisma.sql`(
-      unaccent(lower(full_name)) ILIKE unaccent(lower(${nameQuery}))
-      OR (
-        ${documentQuery}::text IS NOT NULL
-        AND document_id LIKE ${documentQuery}
-      )
-    )`;
+function searchCriteriaWhereSql(criteria: FoundPeopleSearchCriteria) {
+  const filters: Prisma.Sql[] = [];
+  if (criteria.name) filters.push(Prisma.sql`unaccent(lower(full_name)) ILIKE unaccent(lower(${`%${criteria.name}%`}))`);
+  if (criteria.documentId) filters.push(Prisma.sql`document_id LIKE ${`%${criteria.documentId}%`}`);
+  return filters.length > 0 ? andSql(filters) : Prisma.sql`true`;
 }
 
 type PreparedUpsertPerson = UpsertPersonInput & {
@@ -109,7 +97,7 @@ async function prepareUpsertPerson(person: UpsertPersonInput): Promise<PreparedU
   return {
     ...person,
     hash: person.sourceHash ?? await sha256(`${person.sourceUrl}:${person.fullName}`),
-    documentId: normalizeDocumentId(person.documentId),
+    documentId: normalizeDocumentId(person.documentId) ?? null,
   };
 }
 
@@ -273,6 +261,10 @@ function orSql(filters: Prisma.Sql[]) {
   return filters.slice(1).reduce((where, filter) => Prisma.sql`${where} OR ${filter}`, filters[0]!);
 }
 
+function andSql(filters: Prisma.Sql[]) {
+  return filters.slice(1).reduce((where, filter) => Prisma.sql`${where} AND ${filter}`, filters[0]!);
+}
+
 export function enrichExistingPerson(existing: ExistingIngestPerson, incoming: UpsertPersonInput, match: IngestMatchInput): EnrichedPerson {
   const incomingInfo = incoming.relevantInfo ?? null;
   const documentId = existing.documentId ?? match.documentId;
@@ -387,44 +379,12 @@ export async function listPeopleExternal(page: number, pageSize: number) {
 }
 
 export async function searchPeopleExternal(search: string, page: number, pageSize: number) {
-  const offset = (page - 1) * pageSize;
-  const nameQuery = `%${search}%`;
-  const documentDigits = normalizeDocumentDigits(search);
-  const documentQuery = documentDigits ? `%${documentDigits}%` : null;
-  const where = Prisma.sql`(
-      unaccent(lower(full_name)) ILIKE unaccent(lower(${nameQuery}))
-      OR (${documentQuery}::text IS NOT NULL AND document_id LIKE ${documentQuery})
-    )`;
-  const [items, total] = await Promise.all([
-    prisma.$queryRaw<FoundPersonExternal[]>`
-      SELECT ${selectColumnsExternalSql()} FROM found_people
-      WHERE ${where}
-      ORDER BY lower(full_name) ASC, source_url ASC
-      LIMIT ${pageSize} OFFSET ${offset}`,
-    prisma.$queryRaw<CountRow[]>`SELECT count(*) AS count FROM found_people WHERE ${where}`,
-  ]);
-  return pageResult(items, page, pageSize, countValue(total));
+  return searchPeopleExternalByCriteria(buildFoundPeopleSearchCriteria({ q: search }), page, pageSize);
 }
 
-export async function searchPeopleByName(name: string, page: number, pageSize: number) {
+export async function searchPeopleExternalByCriteria(criteria: FoundPeopleSearchCriteria, page: number, pageSize: number) {
   const offset = (page - 1) * pageSize;
-  const nameQuery = `%${name}%`;
-  const where = Prisma.sql`unaccent(lower(full_name)) ILIKE unaccent(lower(${nameQuery}))`;
-  const [items, total] = await Promise.all([
-    prisma.$queryRaw<FoundPersonExternal[]>`
-      SELECT ${selectColumnsExternalSql()} FROM found_people
-      WHERE ${where}
-      ORDER BY lower(full_name) ASC, source_url ASC
-      LIMIT ${pageSize} OFFSET ${offset}`,
-    prisma.$queryRaw<CountRow[]>`SELECT count(*) AS count FROM found_people WHERE ${where}`,
-  ]);
-  return pageResult(items, page, pageSize, countValue(total));
-}
-
-export async function searchPeopleByDocument(digits: string, page: number, pageSize: number) {
-  const offset = (page - 1) * pageSize;
-  const documentQuery = `%${digits}%`;
-  const where = Prisma.sql`document_id LIKE ${documentQuery}`;
+  const where = searchCriteriaWhereSql(criteria);
   const [items, total] = await Promise.all([
     prisma.$queryRaw<FoundPersonExternal[]>`
       SELECT ${selectColumnsExternalSql()} FROM found_people

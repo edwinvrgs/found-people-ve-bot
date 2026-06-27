@@ -29,8 +29,8 @@ export {
   listPeople,
   listPeopleExternal,
   searchPeople,
-  searchPeopleByDocument,
-  searchPeopleByName,
   searchPeopleExternal,
+  searchPeopleExternalByCriteria,
+  searchPeopleWithCriteria,
   upsertPeople,
 } from "./repositories/found-people-repository.js";
