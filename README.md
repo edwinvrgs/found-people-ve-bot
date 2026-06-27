@@ -185,6 +185,7 @@ PORT=3000
 DATABASE_URL=
 PG_POOL_MAX=5
 PUBLIC_BASE_URL=
+FOUND_PEOPLE_API_BASE_URL=
 INGEST_SECRET=
 EXTERNAL_API_SECRET=
 TELEGRAM_BOT_TOKEN=
@@ -195,6 +196,8 @@ POSTHOG_HOST=https://us.i.posthog.com
 ANALYTICS_HASH_SALT=
 LOG_LEVEL=info
 ```
+
+`FOUND_PEOPLE_API_BASE_URL` is optional for local development. When set, the bot reads list and search results from the external API's unified `GET /api/v1/found-people` endpoint (`page`, `page_size`, `name`, `document_id`, `q`). When omitted, it falls back to the local database.
 
 Configure Telegram webhook:
 

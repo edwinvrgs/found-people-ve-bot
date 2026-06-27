@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { alias, capture, identify } from "../analytics.js";
 import type { FoundPerson } from "../db.js";
 import { env } from "../config/env.js";
@@ -48,7 +49,9 @@ type PendingChatAction =
 
 const pendingChatActions = new Map<number, PendingChatAction>();
 const shortPersonIds = new Map<string, { id: string; expiresAt: number }>();
+const searchTokens = new Map<string, { query: string; expiresAt: number }>();
 const PENDING_ACTION_TTL_MS = 15 * 60_000;
+const SEARCH_TOKEN_TTL_MS = 30 * 60_000;
 const identifiedTelegramUsers = new Set<string>();
 
 function telegramEvent(event: string, chatId: number) {
@@ -298,6 +301,14 @@ async function handleCallback(callback: NonNullable<TelegramUpdate["callback_que
     return sendPeoplePage(chatId, Number(listMatch[1]), messageId, callback.from);
   }
 
+  const searchMatch = data.match(/^search_page:([^:]+):(\d+)$/);
+  if (searchMatch) {
+    await answerCallback(callback.id);
+    const query = resolveSearchToken(searchMatch[1]!);
+    if (!query) return editMessage(chatId, messageId, "La búsqueda expiró. Escribe de nuevo el nombre o la cédula para buscar.", [[button("🔎 Buscar", "search"), button("📋 Lista", "list:1")]]);
+    return sendSearchResults(chatId, query, undefined, Number(searchMatch[2]), messageId, callback.from);
+  }
+
   return answerCallback(callback.id);
 }
 
@@ -400,35 +411,47 @@ async function sendPeoplePage(chatId: number, page: number, messageId?: number, 
   return messageId ? editMessage(chatId, messageId, text, buttons) : sendMessage(chatId, text, buttons);
 }
 
-async function sendSearchResults(chatId: number, query: string, message?: NonNullable<TelegramUpdate["message"]>) {
+async function sendSearchResults(
+  chatId: number,
+  query: string,
+  message?: NonNullable<TelegramUpdate["message"]>,
+  page = 1,
+  messageId?: number,
+  user?: TelegramUser,
+) {
   const parsed = TelegramSearchQuerySchema.safeParse(query);
   if (!parsed.success) return sendMessage(chatId, "Escribe al menos 2 caracteres y máximo 80 para buscar. Puedes buscar por nombre o cédula.");
 
-  await incrementMetric("telegram_search");
-  const result = await searchPublicPeople(parsed.data, 1, 5);
+  if (page === 1) await incrementMetric("telegram_search");
+  const result = await searchPublicPeople(parsed.data, page, 5);
   const documentSearch = documentSearchLabel(parsed.data);
-  const distinctId = telegramDistinctId(chatId, message?.from);
-  capture(telegramEvent("search_performed", chatId), distinctId, {
+  const distinctId = telegramDistinctId(chatId, message?.from ?? user);
+  capture(telegramEvent(page === 1 ? "search_performed" : "search_page_viewed", chatId), distinctId, {
     queryLengthBucket: lengthBucket(parsed.data.length),
     queryType: documentSearch ? "document" : "name",
     resultCount: result.items.length,
     total: result.total,
+    page: result.page,
   });
   captureSearchMatched({
     surface: "telegram",
     total: result.total,
     resultCount: result.items.length,
-    page: 1,
-    pageSize: 5,
+    page: result.page,
+    pageSize: result.pageSize,
     query: parsed.data,
     distinctId,
   });
   const displayQuery = documentSearch ?? `“${escapeHtml(parsed.data)}”`;
   const text = result.total === 0
     ? `No encontré resultados para ${displayQuery}.\n\nPrueba con menos caracteres o revisa la lista completa.`
-    : formatPeopleList(result.items, `Resultados para ${displayQuery}`, result.total);
+    : formatPeopleList(result.items, `Resultados para ${displayQuery} (${result.page}/${result.totalPages})`, result.total);
 
-  return sendMessage(chatId, text, [[button("🔎 Buscar", "search"), button("📋 Lista", "list:1")]]);
+  const buttons = result.total === 0
+    ? [[button("🔎 Buscar", "search"), button("📋 Lista", "list:1")]]
+    : [...searchPaginationButtons(parsed.data, result.page, result.totalPages), [button("🔎 Buscar", "search"), button("📋 Lista", "list:1")]];
+
+  return messageId ? editMessage(chatId, messageId, text, buttons) : sendMessage(chatId, text, buttons);
 }
 
 
@@ -482,6 +505,30 @@ function paginationButtons(prefix: string, page: number, totalPages: number): In
   if (page > 1) row.push(button("⬅️", `${prefix}:${page - 1}`));
   if (page < totalPages) row.push(button("➡️", `${prefix}:${page + 1}`));
   return row.length ? [row] : [];
+}
+
+function searchPaginationButtons(query: string, page: number, totalPages: number): InlineButton[][] {
+  const row: InlineButton[] = [];
+  const token = rememberSearchQuery(query);
+  if (page > 1) row.push(button("⬅️", `search_page:${token}:${page - 1}`));
+  if (page < totalPages) row.push(button("➡️", `search_page:${token}:${page + 1}`));
+  return row.length ? [row] : [];
+}
+
+function rememberSearchQuery(query: string) {
+  const token = randomUUID().replace(/-/g, "").slice(0, 12);
+  searchTokens.set(token, { query, expiresAt: Date.now() + SEARCH_TOKEN_TTL_MS });
+  return token;
+}
+
+function resolveSearchToken(token: string) {
+  const cached = searchTokens.get(token);
+  if (!cached) return null;
+  if (cached.expiresAt < Date.now()) {
+    searchTokens.delete(token);
+    return null;
+  }
+  return cached.query;
 }
 
 function truncate(value: string, max: number) {

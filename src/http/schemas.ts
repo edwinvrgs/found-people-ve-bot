@@ -18,24 +18,40 @@ const SafeSearchQuerySchema = z.preprocess(
     .optional(),
 );
 
-const PeopleQuerySchema = z.object({
-  page: z.coerce.number().int().min(1).max(500).default(1),
-  pageSize: z.coerce.number().int().min(1).max(10).default(5),
-  q: SafeSearchQuerySchema,
-});
+function coercePageSize(value: Record<string, unknown>) {
+  return { ...value, pageSize: value.pageSize ?? value.page_size };
+}
+
+function coerceDocumentId(value: Record<string, unknown>) {
+  return { ...value, documentId: value.documentId ?? value.document_id };
+}
+
+const PeopleQuerySchema = z.preprocess(
+  (value) => value && typeof value === "object" && !Array.isArray(value) ? coercePageSize(value as Record<string, unknown>) : value,
+  z.object({
+    page: z.coerce.number().int().min(1).max(500).default(1),
+    pageSize: z.coerce.number().int().min(1).max(10).default(5),
+    q: SafeSearchQuerySchema,
+  }),
+);
 
 const TelegramSearchQuerySchema = z.string().trim().min(2).max(80);
 
-const ExternalListQuerySchema = z.object({
-  page: z.coerce.number().int().min(1).max(500).default(1),
-  pageSize: z.coerce.number().int().min(1).max(100).default(10),
-  name: SafeSearchQuerySchema,
-  q: SafeSearchQuerySchema,
-  documentId: z.preprocess(
-    (v) => typeof v === "string" ? v.replace(/\D/g, "") : v,
-    z.string().min(6).max(9).optional(),
-  ),
-});
+const ExternalListQuerySchema = z.preprocess(
+  (value) => value && typeof value === "object" && !Array.isArray(value)
+    ? coerceDocumentId(coercePageSize(value as Record<string, unknown>))
+    : value,
+  z.object({
+    page: z.coerce.number().int().min(1).max(500).default(1),
+    pageSize: z.coerce.number().int().min(1).max(100).default(10),
+    name: SafeSearchQuerySchema,
+    q: SafeSearchQuerySchema,
+    documentId: z.preprocess(
+      (v) => typeof v === "string" ? v.replace(/\D/g, "") : v,
+      z.string().min(6).max(9).optional(),
+    ),
+  }),
+);
 
 const PersonPayloadSchema = z.object({
   fullName: z.string().trim().min(2).max(200),

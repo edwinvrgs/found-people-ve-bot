@@ -13,6 +13,7 @@ import {
   upsertPeople,
   type UpsertPersonInput,
 } from "../repositories/found-people-repository.js";
+import { externalFoundPeopleApiConfigured, listFoundPeopleFromApi, toPublicFoundPersonPage } from "./found-people-api-client.js";
 
 export type ExternalFoundPeopleSearch = {
   page: number;
@@ -39,20 +40,29 @@ export type ExternalReportOptions = {
   publicBaseUrl: string;
 };
 
-export function listPublicPeople(page: number, pageSize: number) {
+export async function listPublicPeople(page: number, pageSize: number) {
+  if (externalFoundPeopleApiConfigured()) return toPublicFoundPersonPage(await listFoundPeopleFromApi({ page, pageSize }));
   return listPeople(page, pageSize);
 }
 
-export function searchPublicPeople(name: string, page: number, pageSize: number) {
-  return searchPeople(name, page, pageSize);
+export async function searchPublicPeople(query: string, page: number, pageSize: number) {
+  if (externalFoundPeopleApiConfigured()) return toPublicFoundPersonPage(await listFoundPeopleFromApi(searchInputFromQuery(query, page, pageSize)));
+  return searchPeople(query, page, pageSize);
 }
 
-export function listExternalFoundPeople(input: ExternalFoundPeopleSearch) {
+export async function listExternalFoundPeople(input: ExternalFoundPeopleSearch) {
   const { page, pageSize, q, name, documentId } = input;
+  if (externalFoundPeopleApiConfigured()) return listFoundPeopleFromApi(input);
   if (documentId) return searchPeopleByDocument(documentId, page, pageSize);
   if (name) return searchPeopleByName(name, page, pageSize);
   if (q) return searchPeopleExternal(q, page, pageSize);
   return listPeopleExternal(page, pageSize);
+}
+
+function searchInputFromQuery(query: string, page: number, pageSize: number): ExternalFoundPeopleSearch {
+  const documentId = query.replace(/\D/g, "");
+  if (documentId.length >= 6 && documentId.length <= 9) return { page, pageSize, documentId };
+  return { page, pageSize, name: query };
 }
 
 export function ingestPeople(people: UpsertPersonInput[]) {
