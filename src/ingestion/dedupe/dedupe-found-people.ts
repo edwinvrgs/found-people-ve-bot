@@ -45,7 +45,7 @@ async function main() {
     return;
   }
 
-  const result = await applyPlan(plan, args.appliedBy);
+  const result = await applyPlan(plan);
   console.log(JSON.stringify({ mode: "applied", planPath, ...result }, null, 2));
 }
 
@@ -57,7 +57,6 @@ async function generatePlan() {
     document_id: string | null;
     source_url: string;
     source_hash: string | null;
-    status: string;
     raw: Record<string, unknown> | null;
     created_at: Date;
     updated_at: Date;
@@ -69,12 +68,10 @@ async function generatePlan() {
       document_id,
       source_url,
       source_hash,
-      status,
       raw,
       created_at,
       updated_at
-    FROM found_people
-    WHERE status IN ('verified', 'citizen_report')`;
+    FROM found_people`;
 
   return buildDedupeMergePlan(rows.map<DuplicateAuditRow>((row) => ({
     id: row.id,
@@ -83,7 +80,6 @@ async function generatePlan() {
     documentId: row.document_id,
     sourceUrl: row.source_url,
     sourceHash: row.source_hash,
-    status: row.status,
     raw: row.raw,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -104,23 +100,20 @@ function writePlan(outputDir: string, plan: DedupeMergePlan) {
   return outputPath;
 }
 
-async function applyPlan(plan: DedupeMergePlan, appliedBy: string) {
+async function applyPlan(plan: DedupeMergePlan) {
   return prisma.$transaction(async (tx) => {
     let canonicalRowsUpdated = 0;
     let duplicateRowsRemoved = 0;
-    let auditRowsInserted = 0;
 
     for (const operation of plan.operations) {
-      await applyOperation(tx, operation, appliedBy);
+      await applyOperation(tx, operation);
       canonicalRowsUpdated += 1;
       duplicateRowsRemoved += operation.duplicateIds.length;
-      auditRowsInserted += operation.duplicateIds.length;
     }
 
     return {
       canonicalRowsUpdated,
       duplicateRowsRemoved,
-      auditRowsInserted,
     };
   }, {
     maxWait: 10_000,
@@ -128,7 +121,7 @@ async function applyPlan(plan: DedupeMergePlan, appliedBy: string) {
   });
 }
 
-async function applyOperation(tx: Omit<typeof prisma, "$connect" | "$disconnect" | "$on" | "$transaction" | "$use" | "$extends">, operation: DedupeMergeOperation, appliedBy: string) {
+async function applyOperation(tx: Omit<typeof prisma, "$connect" | "$disconnect" | "$on" | "$transaction" | "$use" | "$extends">, operation: DedupeMergeOperation) {
   const [beforeCanonical] = await tx.$queryRaw<Array<Record<string, unknown>>>`
     SELECT * FROM found_people WHERE id = ${operation.canonicalId}::uuid FOR UPDATE`;
   if (!beforeCanonical) throw new Error(`Canonical row not found: ${operation.canonicalId}`);
@@ -139,50 +132,17 @@ async function applyOperation(tx: Omit<typeof prisma, "$connect" | "$disconnect"
       relevant_info = ${operation.merged.relevantInfo},
       document_id = ${operation.merged.documentId},
       source_url = ${operation.merged.sourceUrl},
-      status = ${operation.merged.status},
       raw = ${JSON.stringify(operation.merged.raw)}::jsonb,
       updated_at = now()
     WHERE id = ${operation.canonicalId}::uuid`;
 
   for (const duplicateId of operation.duplicateIds) {
-    const [beforeDuplicate] = await tx.$queryRaw<Array<Record<string, unknown>>>`
+    const [duplicate] = await tx.$queryRaw<Array<Record<string, unknown>>>`
       SELECT * FROM found_people WHERE id = ${duplicateId}::uuid FOR UPDATE`;
-    if (!beforeDuplicate) throw new Error(`Duplicate row not found: ${duplicateId}`);
-
-    const duplicateMergeMetadata = {
-      mergedIntoId: operation.canonicalId,
-      mergeReason: operation.reason,
-      mergeKey: operation.key,
-      mergedAt: new Date().toISOString(),
-    };
+    if (!duplicate) throw new Error(`Duplicate row not found: ${duplicateId}`);
 
     await tx.$executeRaw`
-      UPDATE found_people SET
-        status = 'removed',
-        raw = raw || ${JSON.stringify(duplicateMergeMetadata)}::jsonb,
-        updated_at = now()
-      WHERE id = ${duplicateId}::uuid`;
-
-    await tx.$executeRaw`
-      INSERT INTO found_people_merge_audit (
-        canonical_id,
-        duplicate_id,
-        reason,
-        confidence,
-        before_canonical,
-        before_duplicate,
-        planned_canonical,
-        applied_by
-      ) VALUES (
-        ${operation.canonicalId}::uuid,
-        ${duplicateId}::uuid,
-        ${operation.reason},
-        ${operation.confidence},
-        ${JSON.stringify(beforeCanonical)}::jsonb,
-        ${JSON.stringify(beforeDuplicate)}::jsonb,
-        ${JSON.stringify(operation.merged)}::jsonb,
-        ${appliedBy}
-      )`;
+      DELETE FROM found_people WHERE id = ${duplicateId}::uuid`;
   }
 }
 
