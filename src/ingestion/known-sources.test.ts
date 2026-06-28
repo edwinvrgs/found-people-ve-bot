@@ -31,17 +31,44 @@ describe("Known found-person source ingestion", () => {
 
     assert.equal(result.errors.length, 0);
     assert.deepEqual(new Set(requestedUrls.map((url) => new URL(url).hostname)), new Set([
-      "venezuelatebusca.com",
       "desaparecidos-terremoto-api.theempire.tech",
       "encuentralos.tecnosoft.dev",
       "www.desaparecidosvenezuela.com",
-      "sosvenezuela2026.com",
     ]));
-    assert.equal(requestedUrls.some((url) => url.includes("venezuelatebusca.com")), true);
     assert.equal(requestedUrls.some((url) => url.includes("desaparecidos-terremoto-api.theempire.tech")), true);
     assert.equal(requestedUrls.some((url) => url.includes("encuentralos.tecnosoft.dev")), true);
     assert.equal(requestedUrls.some((url) => url.includes("desaparecidosvenezuela.com/api/personas")), true);
-    assert.equal(requestedUrls.some((url) => url.includes("sosvenezuela2026.com/api/persons/list")), true);
+    assert.equal(requestedUrls.some((url) => url.includes("venezuelatebusca.com")), false);
+    assert.equal(requestedUrls.some((url) => url.includes("sosvenezuela2026.com/api/persons/list")), false);
+  });
+
+  it("keeps low-signal duplicate aggregators opt-in only", async () => {
+    const requestedUrls: string[] = [];
+    const previous = process.env.FOUND_PEOPLE_INCLUDE_LOW_SIGNAL_SOURCES;
+    process.env.FOUND_PEOPLE_INCLUDE_LOW_SIGNAL_SOURCES = "true";
+
+    globalThis.fetch = (async (input: Parameters<typeof fetch>[0]) => {
+      const url = String(input);
+      requestedUrls.push(url);
+      if (url.includes("venezuelatebusca.com")) {
+        return new Response("<html><body>Registrar persona</body></html>", { status: 200, headers: { "content-type": "text/html" } });
+      }
+      if (url.includes("desaparecidosvenezuela.com") || url.includes("sosvenezuela2026.com")) {
+        return new Response(JSON.stringify([]), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      return new Response(JSON.stringify({ items: [], total: 0 }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    try {
+      const result = await searchKnownFoundPersonSources();
+
+      assert.equal(result.errors.length, 0);
+      assert.equal(requestedUrls.some((url) => url.includes("venezuelatebusca.com")), true);
+      assert.equal(requestedUrls.some((url) => url.includes("sosvenezuela2026.com/api/persons/list")), true);
+    } finally {
+      if (previous === undefined) delete process.env.FOUND_PEOPLE_INCLUDE_LOW_SIGNAL_SOURCES;
+      else process.env.FOUND_PEOPLE_INCLUDE_LOW_SIGNAL_SOURCES = previous;
+    }
   });
 });
 
@@ -76,7 +103,7 @@ describe("Desaparecidos Venezuela ingestion", () => {
     globalThis.fetch = (async (input: Parameters<typeof fetch>[0]) => {
       requestedUrls.push(String(input));
       const estado = new URL(String(input)).searchParams.get("estado");
-      return new Response(JSON.stringify([{ id: `id-${estado}`, nombre: "Persona Localizada", estado }]), {
+      return new Response(JSON.stringify([{ id: `id-${estado}`, nombre: "Ana Maria Perez", estado }]), {
         status: 200,
         headers: { "content-type": "application/json" },
       });
@@ -118,7 +145,7 @@ describe("SOS Venezuela 2026 ingestion", () => {
       return new Response(JSON.stringify(Array.from({ length: offset === 0 ? 100 : 1 }, (_, index) => ({
         id: `person-${offset}-${index}`,
         status: "found_alive",
-        display_name: "Persona Localizada",
+        display_name: `Ana Maria Perez ${String.fromCharCode(65 + (index % 26))} ${offset === 0 ? "Inicial" : "Final"}`,
       }))), { status: 200, headers: { "content-type": "application/json" } });
     }) as typeof fetch;
 
@@ -131,6 +158,21 @@ describe("SOS Venezuela 2026 ingestion", () => {
     assert.equal(new URL(requestedUrls[1]).searchParams.get("offset"), "100");
     assert.equal(result.candidates.length, 101);
     assert.deepEqual(result.errors, []);
+  });
+});
+
+describe("Known source quality filters", () => {
+  it("rejects placeholder names that explode duplicate counts", () => {
+    assert.equal(sosVenezuelaPersonToCandidate({
+      id: "placeholder-1",
+      status: "found_alive",
+      display_name: "Menor reportado",
+    }), null);
+    assert.equal(sosVenezuelaPersonToCandidate({
+      id: "placeholder-2",
+      status: "found_alive",
+      display_name: "(Pendiente de verificar)",
+    }), null);
   });
 });
 
