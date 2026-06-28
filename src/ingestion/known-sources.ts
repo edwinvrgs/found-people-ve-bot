@@ -122,12 +122,30 @@ function textFromHtml(html: string) {
 
 function isClearlyBadName(name: string) {
   const cleaned = name.trim();
+  const normalized = cleaned
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLocaleLowerCase("es-VE")
+    .replace(/[^a-z0-9ñ\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
   if (cleaned.length < 5 || cleaned.length > 120) return true;
   if (/https?:|www\.|@|#|\p{Extended_Pictographic}/iu.test(cleaned)) return true;
   if (/\d/.test(cleaned)) return true;
   if (/\b(test|trusted|oracle|infinityhotel|ayudemos|no se|no sé)\b/iu.test(cleaned)) return true;
+  if (LOW_SIGNAL_PLACEHOLDER_NAMES.has(normalized)) return true;
   return cleaned.split(/\s+/).filter(Boolean).length < 2;
 }
+
+const LOW_SIGNAL_PLACEHOLDER_NAMES = new Set([
+  "menor reportado",
+  "pendiente de verificar",
+  "persona localizada",
+  "persona encontrada",
+  "persona reportada",
+  "persona sin identificar",
+  "sin identificar",
+]);
 
 function candidate(source: SourceName, id: string, fullName: string, relevantInfo: string, sourceUrl: string, raw: Record<string, unknown>, documentValue?: string | null): SearchCandidateInput | null {
   const normalizedName = fullName.replace(/\s+/g, " ").trim();
@@ -454,12 +472,15 @@ function apiPageDelayMs(source: Extract<SourceName, "desaparecidos_terremoto" | 
 }
 
 export async function searchKnownFoundPersonSources(signal?: AbortSignal): Promise<{ candidates: SearchCandidateInput[]; errors: string[] }> {
+  const includeLowSignalSources = process.env.FOUND_PEOPLE_INCLUDE_LOW_SIGNAL_SOURCES?.toLowerCase() === "true";
   const adapters: FoundPersonSourceAdapter[] = [
-    { name: "venezuelatebusca", search: (sourceSignal) => scrapeVenezuelaTeBusca(true, sourceSignal) },
     { name: "desaparecidos_terremoto", search: (sourceSignal) => scrapeApiSource("desaparecidos_terremoto", DESAPARECIDOS_API_URL, "https://desaparecidosterremotovenezuela.com/", true, sourceSignal) },
     { name: "encuentralos", search: (sourceSignal) => scrapeApiSource("encuentralos", ENCUENTRALOS_API_URL, "https://encuentralos.tecnosoft.dev/", true, sourceSignal) },
     { name: "desaparecidos_venezuela", search: (sourceSignal) => scrapeDesaparecidosVenezuelaSource(DESAPARECIDOS_VENEZUELA_API_URL, true, sourceSignal) },
-    { name: "sos_venezuela_2026", search: (sourceSignal) => scrapeSosVenezuelaSource(SOS_VENEZUELA_API_URL, true, sourceSignal) },
+    ...(includeLowSignalSources ? [
+      { name: "venezuelatebusca" as const, search: (sourceSignal?: AbortSignal) => scrapeVenezuelaTeBusca(true, sourceSignal) },
+      { name: "sos_venezuela_2026" as const, search: (sourceSignal?: AbortSignal) => scrapeSosVenezuelaSource(SOS_VENEZUELA_API_URL, true, sourceSignal) },
+    ] : []),
   ];
 
   const results = await Promise.all(adapters.map((adapter) => adapter.search(signal)));

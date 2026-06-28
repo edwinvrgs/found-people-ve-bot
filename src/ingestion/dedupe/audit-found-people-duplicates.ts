@@ -40,7 +40,6 @@ async function main() {
     document_id: string | null;
     source_url: string;
     source_hash: string | null;
-    status: string;
     raw: Record<string, unknown> | null;
     created_at: Date;
     updated_at: Date;
@@ -52,12 +51,10 @@ async function main() {
       document_id,
       source_url,
       source_hash,
-      status,
       raw,
       created_at,
       updated_at
-    FROM found_people
-    WHERE status IN ('verified', 'citizen_report')`;
+    FROM found_people`;
 
   const report = buildDuplicateAuditReport(rows.map<DuplicateAuditRow>((row) => ({
     id: row.id,
@@ -66,7 +63,6 @@ async function main() {
     documentId: row.document_id,
     sourceUrl: row.source_url,
     sourceHash: row.source_hash,
-    status: row.status,
     raw: row.raw,
     createdAt: row.created_at,
     updatedAt: row.updated_at,

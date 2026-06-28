@@ -5,7 +5,6 @@ export type DuplicateAuditRow = {
   documentId: string | null;
   sourceUrl: string;
   sourceHash?: string | null;
-  status: string;
   raw?: Record<string, unknown> | null;
   createdAt?: string | Date | null;
   updatedAt?: string | Date | null;
@@ -18,7 +17,6 @@ export type DuplicatePersonSummary = {
   documentId: string | null;
   source: string;
   sourceUrl: string;
-  status: string;
   createdAt?: string | Date | null;
   updatedAt?: string | Date | null;
 };
@@ -38,7 +36,6 @@ export type DedupeMergeOperation = {
     relevantInfo: string | null;
     documentId: string | null;
     sourceUrl: string;
-    status: string;
     raw: Record<string, unknown>;
   };
 };
@@ -49,8 +46,8 @@ export type DedupeMergePlan = {
   strategy: {
     automaticReasons: DedupeMergeReason[];
     manualReviewReasons: string[];
-    destructiveDeletes: false;
-    duplicateDisposition: "soft_remove_with_merged_into_metadata";
+    destructiveDeletes: true;
+    duplicateDisposition: "delete_duplicate_rows_after_merging_metadata_into_canonical";
   };
   summary: {
     automaticClusters: number;
@@ -201,10 +198,15 @@ export function buildDedupeMergePlan(rows: DuplicateAuditRow[], options: Duplica
   const operations: DedupeMergeOperation[] = [];
   const claimedDuplicateIds = new Set<string>();
 
-  const addHighConfidenceGroups = (reason: DedupeMergeReason, groups: Map<string, DuplicateAuditRow[]>) => {
+  const addHighConfidenceGroups = (
+    reason: DedupeMergeReason,
+    groups: Map<string, DuplicateAuditRow[]>,
+    isSafeAutomaticGroup: (rows: DuplicateAuditRow[]) => boolean = () => true,
+  ) => {
     for (const [key, group] of groups) {
       const eligible = group.filter((row) => !claimedDuplicateIds.has(row.id));
       if (eligible.length < 2) continue;
+      if (!isSafeAutomaticGroup(eligible)) continue;
 
       const canonical = chooseCanonicalPerson(eligible);
       const duplicates = eligible.filter((row) => row.id !== canonical.id);
@@ -219,6 +221,7 @@ export function buildDedupeMergePlan(rows: DuplicateAuditRow[], options: Duplica
   addHighConfidenceGroups(
     "same_document_id",
     groupRows(rows.filter((row) => row.documentId), (row) => row.documentId!),
+    namesClearlyReferToSamePerson,
   );
   addHighConfidenceGroups(
     "same_source_url",
@@ -236,8 +239,8 @@ export function buildDedupeMergePlan(rows: DuplicateAuditRow[], options: Duplica
     strategy: {
       automaticReasons: ["same_document_id", "same_source_url"],
       manualReviewReasons: ["same_normalized_name", "similar_name"],
-      destructiveDeletes: false,
-      duplicateDisposition: "soft_remove_with_merged_into_metadata",
+      destructiveDeletes: true,
+      duplicateDisposition: "delete_duplicate_rows_after_merging_metadata_into_canonical",
     },
     summary: {
       automaticClusters: operations.length,
@@ -264,7 +267,6 @@ function buildMergeOperation(reason: DedupeMergeReason, key: string, canonical: 
       relevantInfo: bestRelevantInfo([canonical, ...duplicates]),
       documentId: canonical.documentId ?? duplicates.find((duplicate) => duplicate.documentId)?.documentId ?? null,
       sourceUrl: canonical.sourceUrl,
-      status: canonical.status === "removed" ? "verified" : canonical.status,
       raw: mergedRaw,
     },
   };
@@ -275,8 +277,7 @@ function chooseCanonicalPerson(rows: DuplicateAuditRow[]) {
 }
 
 function canonicalScore(row: DuplicateAuditRow) {
-  return (row.status !== "removed" ? 10_000 : 0)
-    + (row.documentId ? 2_000 : 0)
+  return (row.documentId ? 2_000 : 0)
     + sourcePriority(row)
     + Math.min(500, String(row.relevantInfo ?? "").length)
     + Math.min(100, normalizeName(row.fullName).length);
@@ -288,11 +289,24 @@ function isPersonSpecificSourceUrl(sourceUrl: string) {
     if (url.hostname === "venezuelatebusca.com") return /^#record=.+/.test(url.hash);
     if (url.searchParams.get("persona")) return true;
     if (/\/p\/[A-Za-z0-9_-]+/.test(url.pathname)) return true;
-    if (url.hostname === "github.com" && /^#L\d+/.test(url.hash)) return true;
     return false;
   } catch {
     return false;
   }
+}
+
+function namesClearlyReferToSamePerson(rows: DuplicateAuditRow[]) {
+  const normalizedNames = rows.map((row) => normalizeName(row.fullName)).filter(Boolean);
+  if (normalizedNames.length !== rows.length) return false;
+  const [firstName, ...otherNames] = normalizedNames;
+  return otherNames.every((name) => namesAreClearlyCompatible(firstName!, name));
+}
+
+function namesAreClearlyCompatible(firstName: string, secondName: string) {
+  return firstName === secondName
+    || nameSimilarity(firstName, secondName) >= 0.94
+    || firstName.includes(secondName)
+    || secondName.includes(firstName);
 }
 
 function sourcePriority(row: DuplicateAuditRow) {
@@ -410,7 +424,6 @@ function summarizePerson(row: DuplicateAuditRow): DuplicatePersonSummary {
     documentId: row.documentId,
     source: sourceOf(row),
     sourceUrl: row.sourceUrl,
-    status: row.status,
     ...(row.createdAt ? { createdAt: row.createdAt } : {}),
     ...(row.updatedAt ? { updatedAt: row.updatedAt } : {}),
   };

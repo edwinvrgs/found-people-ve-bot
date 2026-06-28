@@ -7,7 +7,6 @@ const row = (overrides: Partial<DuplicateAuditRow>): DuplicateAuditRow => ({
   fullName: "Persona Test",
   documentId: null,
   sourceUrl: `https://example.com/${crypto.randomUUID()}`,
-  status: "verified",
   relevantInfo: null,
   raw: { source: "test_source" },
   ...overrides,
@@ -69,7 +68,7 @@ describe("found-person duplicate audit", () => {
     });
     const duplicate = row({
       id: "00000000-0000-0000-0000-000000000002",
-      fullName: "Ana Diaz",
+      fullName: "Ana María Díaz Hernandez",
       relevantInfo: "Hospital A",
       documentId: "10576803",
       sourceUrl: "https://example.com/duplicate",
