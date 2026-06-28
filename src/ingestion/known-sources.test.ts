@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
-import { localizadosVenezuelaPersonToCandidate, parseVenezuelaTeBuscaPage, scrapeApiSource, scrapeLocalizadosVenezuelaSource, searchKnownFoundPersonSources, shouldStopApiPagination } from "./known-sources.js";
+import { desaparecidosVenezuelaPersonToCandidate, localizadosVenezuelaPersonToCandidate, parseVenezuelaTeBuscaPage, scrapeApiSource, scrapeDesaparecidosVenezuelaSource, scrapeLocalizadosVenezuelaSource, scrapeSosVenezuelaSource, searchKnownFoundPersonSources, shouldStopApiPagination, sosVenezuelaPersonToCandidate } from "./known-sources.js";
 
 const originalFetch = globalThis.fetch;
 
@@ -21,6 +21,12 @@ describe("Known found-person source ingestion", () => {
       if (url.includes("localizadosvenezuela.com")) {
         return new Response(JSON.stringify({ data: [], meta: { page: 1, totalPages: 0 } }), { status: 200, headers: { "content-type": "application/json" } });
       }
+      if (url.includes("desaparecidosvenezuela.com")) {
+        return new Response(JSON.stringify([]), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (url.includes("sosvenezuela2026.com")) {
+        return new Response(JSON.stringify([]), { status: 200, headers: { "content-type": "application/json" } });
+      }
       return new Response(JSON.stringify({ items: [], total: 0 }), { status: 200, headers: { "content-type": "application/json" } });
     }) as typeof fetch;
 
@@ -32,11 +38,104 @@ describe("Known found-person source ingestion", () => {
       "desaparecidos-terremoto-api.theempire.tech",
       "encuentralos.tecnosoft.dev",
       "localizadosvenezuela.com",
+      "www.desaparecidosvenezuela.com",
+      "sosvenezuela2026.com",
     ]));
     assert.equal(requestedUrls.some((url) => url.includes("venezuelatebusca.com")), true);
     assert.equal(requestedUrls.some((url) => url.includes("desaparecidos-terremoto-api.theempire.tech")), true);
     assert.equal(requestedUrls.some((url) => url.includes("encuentralos.tecnosoft.dev")), true);
     assert.equal(requestedUrls.some((url) => url.includes("localizadosvenezuela.com/api/v1/localizados")), true);
+    assert.equal(requestedUrls.some((url) => url.includes("desaparecidosvenezuela.com/api/personas")), true);
+    assert.equal(requestedUrls.some((url) => url.includes("sosvenezuela2026.com/api/persons/list")), true);
+  });
+});
+
+describe("Desaparecidos Venezuela ingestion", () => {
+  it("maps only found/safe statuses and omits sensitive update/contact payloads", () => {
+    const candidate = desaparecidosVenezuelaPersonToCandidate({
+      id: "cmqvjm2l9000k3aqpji1om9q4",
+      nombre: "Rosmar Perez",
+      edad: 33,
+      zona: "La Guaira · Naiguatá",
+      descripcion: "Está bien",
+      estado: "ENCONTRADO",
+      tipo: "VI_A_ALGUIEN",
+      updatedAt: "2026-06-26T23:11:16.314Z",
+      actualizaciones: [{ contacto: "04120000000" }],
+    });
+
+    assert.equal(candidate?.fullName, "Rosmar Perez");
+    assert.equal(candidate?.sourceUrl, "https://www.desaparecidosvenezuela.com/p/cmqvjm2l9000k3aqpji1om9q4");
+    assert.equal(candidate?.raw?.provider, "desaparecidos_venezuela");
+    assert.equal("actualizaciones" in (candidate?.raw ?? {}), false);
+    assert.match(candidate?.relevantInfo ?? "", /Encontrado/u);
+    assert.match(candidate?.sourceHash ?? "", /^[a-f0-9]{64}$/u);
+
+    assert.equal(desaparecidosVenezuelaPersonToCandidate({ id: "1", nombre: "Persona Buscada", estado: "BUSCADO" }), null);
+    assert.equal(desaparecidosVenezuelaPersonToCandidate({ id: "2", nombre: "Persona Info", estado: "INFO_RECIBIDA" }), null);
+  });
+
+  it("queries only ENCONTRADO and SANO_SALVO statuses", async () => {
+    const requestedUrls: string[] = [];
+
+    globalThis.fetch = (async (input: Parameters<typeof fetch>[0]) => {
+      requestedUrls.push(String(input));
+      const estado = new URL(String(input)).searchParams.get("estado");
+      return new Response(JSON.stringify([{ id: `id-${estado}`, nombre: "Persona Localizada", estado }]), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    const result = await scrapeDesaparecidosVenezuelaSource("https://www.desaparecidosvenezuela.com/api/personas", true);
+
+    assert.deepEqual(requestedUrls.map((url) => new URL(url).searchParams.get("estado")), ["ENCONTRADO", "SANO_SALVO"]);
+    assert.equal(result.candidates.length, 2);
+    assert.deepEqual(result.errors, []);
+  });
+});
+
+describe("SOS Venezuela 2026 ingestion", () => {
+  it("maps only found_alive records from the public aggregator", () => {
+    const candidate = sosVenezuelaPersonToCandidate({
+      id: "1663daa6-f1b7-4ef2-becd-580e2bf2f15f",
+      status: "found_alive",
+      cedula_masked: "V-****815",
+      display_name: "Amairyn Pérez",
+      hospital_name: "Hospital Central",
+      source_date: "2026-06-27T20:15:06.986Z",
+    });
+
+    assert.equal(candidate?.fullName, "Amairyn Pérez");
+    assert.equal(candidate?.sourceUrl, "https://sosvenezuela2026.com/buscar?estado=found_alive#person=1663daa6-f1b7-4ef2-becd-580e2bf2f15f");
+    assert.equal(candidate?.documentId, null);
+    assert.equal(candidate?.raw?.provider, "sos_venezuela_2026");
+    assert.match(candidate?.relevantInfo ?? "", /Localizado con vida/u);
+    assert.equal(sosVenezuelaPersonToCandidate({ id: "missing", display_name: "Persona Buscada", status: "seeking_info" }), null);
+  });
+
+  it("uses found_alive offset pagination and stops on a partial page", async () => {
+    const requestedUrls: string[] = [];
+
+    globalThis.fetch = (async (input: Parameters<typeof fetch>[0]) => {
+      requestedUrls.push(String(input));
+      const offset = Number(new URL(String(input)).searchParams.get("offset"));
+      return new Response(JSON.stringify(Array.from({ length: offset === 0 ? 100 : 1 }, (_, index) => ({
+        id: `person-${offset}-${index}`,
+        status: "found_alive",
+        display_name: "Persona Localizada",
+      }))), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    const result = await scrapeSosVenezuelaSource("https://sosvenezuela2026.com/api/persons/list", true);
+
+    assert.equal(requestedUrls.length, 2);
+    assert.equal(new URL(requestedUrls[0]).searchParams.get("estado"), "found_alive");
+    assert.equal(new URL(requestedUrls[0]).searchParams.get("limit"), "100");
+    assert.equal(new URL(requestedUrls[0]).searchParams.get("offset"), "0");
+    assert.equal(new URL(requestedUrls[1]).searchParams.get("offset"), "100");
+    assert.equal(result.candidates.length, 101);
+    assert.deepEqual(result.errors, []);
   });
 });
 
