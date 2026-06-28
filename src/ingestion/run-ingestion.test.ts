@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
 import { runFoundPeopleIngest } from "./run-ingestion.js";
-import type { SearchProviderResult } from "./search-provider.js";
+import type { SearchProviderResult } from "./types.js";
 
 function tmpOutputDir() {
   return mkdtempSync(path.join(tmpdir(), "found-people-ingest-test-"));

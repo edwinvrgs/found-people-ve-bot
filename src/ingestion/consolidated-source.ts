@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { extractDocumentId, sanitizeRelevantInfo } from "./sanitize.js";
-import type { SearchCandidateInput } from "./search-provider.js";
+import type { SearchCandidateInput } from "./types.js";
 
 const OCR_REPO = "ecrespo/OCR-data_Terremoto_Venezuela_24062026";
 const CONSOLIDATED_CSV_PATH = "consolidado.csv";
