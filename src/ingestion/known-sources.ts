@@ -1,10 +1,12 @@
 import { createHash } from "node:crypto";
 import { extractDocumentId, sanitizeRelevantInfo } from "./sanitize.js";
-import type { SearchCandidateInput } from "./search-provider.js";
+import type { SearchCandidateInput } from "./types.js";
 
 const VENEZUELA_TE_BUSCA_URL = "https://venezuelatebusca.com/";
 const DESAPARECIDOS_API_URL = "https://desaparecidos-terremoto-api.theempire.tech/api/personas";
 const ENCUENTRALOS_API_URL = "https://encuentralos.tecnosoft.dev/api/personas";
+const LOCALIZADOS_VENEZUELA_API_URL = "https://localizadosvenezuela.com/api/v1/localizados";
+const LOCALIZADOS_VENEZUELA_PUBLIC_URL = "https://localizadosvenezuela.com/";
 
 const VENEZUELA_TE_BUSCA_PAGE_LIMIT = 250;
 const API_PAGE_LIMIT = 250;
@@ -38,7 +40,37 @@ type ApiPeopleResponse = {
   totalPages?: number;
 };
 
-type SourceName = "venezuelatebusca" | "desaparecidos_terremoto" | "encuentralos";
+type LocalizadosVenezuelaPerson = {
+  slug?: unknown;
+  nombreCompleto?: unknown;
+  direccion?: unknown;
+  observaciones?: unknown;
+  condicion?: unknown;
+  lugarNombre?: unknown;
+  fuente?: {
+    tipo?: unknown;
+    nombre?: unknown;
+    notas?: unknown;
+    url?: unknown;
+    fecha?: unknown;
+  };
+  publicadoEn?: unknown;
+};
+
+type LocalizadosVenezuelaResponse = {
+  data?: LocalizadosVenezuelaPerson[];
+  meta?: {
+    page?: number;
+    totalPages?: number;
+  };
+};
+
+type SourceName = "venezuelatebusca" | "desaparecidos_terremoto" | "encuentralos" | "localizados_venezuela";
+
+type FoundPersonSourceAdapter = {
+  name: SourceName;
+  search(signal?: AbortSignal): Promise<{ candidates: SearchCandidateInput[]; errors: string[] }>;
+};
 
 function throwIfAborted(signal?: AbortSignal) {
   signal?.throwIfAborted();
@@ -214,6 +246,39 @@ function apiPersonToCandidate(source: Extract<SourceName, "desaparecidos_terremo
   return candidate(source, id, fullName, `${source === "encuentralos" ? "Encuéntralos" : "Desaparecidos Terremoto Venezuela"} · ${fields}`, sourceUrl, { id, estado, updatedAt: person.updatedAt ?? person.creado ?? null }, documentText);
 }
 
+export function localizadosVenezuelaPersonToCandidate(person: LocalizadosVenezuelaPerson) {
+  const slug = asString(person.slug);
+  const fullName = asString(person.nombreCompleto);
+  if (!slug || !fullName) return null;
+
+  const fuente = person.fuente ?? {};
+  const fields = [
+    "Localizado",
+    asString(person.condicion) ? `condición: ${asString(person.condicion)}` : "",
+    asString(person.lugarNombre) ? `lugar: ${asString(person.lugarNombre)}` : "",
+    asString(person.direccion) ? `dirección: ${asString(person.direccion)}` : "",
+    asString(person.observaciones) ? `observaciones: ${asString(person.observaciones)}` : "",
+    asString(fuente.nombre) ? `fuente: ${asString(fuente.nombre)}` : "",
+    asString(fuente.fecha || person.publicadoEn) ? `fecha: ${asString(fuente.fecha || person.publicadoEn)}` : "",
+  ].filter(Boolean).join(" · ");
+
+  return candidate(
+    "localizados_venezuela",
+    slug,
+    fullName,
+    `Localizados Venezuela · ${fields}`,
+    `${LOCALIZADOS_VENEZUELA_PUBLIC_URL}localizados/${encodeURIComponent(slug)}`,
+    {
+      slug,
+      condicion: person.condicion ?? null,
+      lugarNombre: person.lugarNombre ?? null,
+      fuente,
+      publicadoEn: person.publicadoEn ?? null,
+    },
+    [asString(person.observaciones), asString(person.direccion)].join(" "),
+  );
+}
+
 export function shouldStopApiPagination(status: number) {
   return status === 401 || status === 403 || status === 429;
 }
@@ -281,19 +346,67 @@ export async function scrapeApiSource(source: Extract<SourceName, "desaparecidos
   return { candidates, errors };
 }
 
+export async function scrapeLocalizadosVenezuelaSource(apiUrl: string, enabled: boolean, signal?: AbortSignal) {
+  if (!enabled) return { candidates: [], errors: [] };
+
+  const candidates: SearchCandidateInput[] = [];
+  const errors: string[] = [];
+  const seenPageSignatures = new Set<string>();
+
+  for (let page = 1; page <= API_PAGE_LIMIT; page += 1) {
+    throwIfAborted(signal);
+    const url = new URL(apiUrl);
+    url.searchParams.set("page", String(page));
+    url.searchParams.set("limit", String(API_PAGE_SIZE));
+
+    try {
+      let response = await fetch(url, { headers: { Accept: "application/json" }, signal });
+      if (response.status === 429) {
+        await sleep(retryAfterMs(response), signal);
+        response = await fetch(url, { headers: { Accept: "application/json" }, signal });
+      }
+      if (!response.ok) {
+        errors.push(`localizados_venezuela page ${page}: ${response.status}`);
+        if (shouldStopApiPagination(response.status)) break;
+        continue;
+      }
+
+      const body = (await response.json().catch(() => ({}))) as LocalizadosVenezuelaResponse;
+      const items = Array.isArray(body.data) ? body.data : [];
+      if (items.length === 0) break;
+
+      const pageCandidates = items.map(localizadosVenezuelaPersonToCandidate).filter((item) => item !== null);
+      const pageSignature = pageCandidates.map((item) => item.sourceHash).join(":");
+      if (pageSignature && seenPageSignatures.has(pageSignature)) break;
+      if (pageSignature) seenPageSignatures.add(pageSignature);
+
+      candidates.push(...pageCandidates);
+      if (items.length < API_PAGE_SIZE || (body.meta?.totalPages && page >= body.meta.totalPages)) break;
+    } catch (error) {
+      if (isAbortError(error, signal)) throw error;
+      errors.push(`localizados_venezuela page ${page}: ${error instanceof Error ? error.message : "unknown error"}`);
+    }
+  }
+
+  return { candidates, errors };
+}
+
 function apiPageDelayMs(source: Extract<SourceName, "desaparecidos_terremoto" | "encuentralos">) {
   return source === "encuentralos" ? 0 : SLOW_API_PAGE_DELAY_MS;
 }
 
 export async function searchKnownFoundPersonSources(signal?: AbortSignal): Promise<{ candidates: SearchCandidateInput[]; errors: string[] }> {
-  const [venezuelaTeBusca, desaparecidos, encuentralos] = await Promise.all([
-    scrapeVenezuelaTeBusca(true, signal),
-    scrapeApiSource("desaparecidos_terremoto", DESAPARECIDOS_API_URL, "https://desaparecidosterremotovenezuela.com/", true, signal),
-    scrapeApiSource("encuentralos", ENCUENTRALOS_API_URL, "https://encuentralos.tecnosoft.dev/", true, signal),
-  ]);
+  const adapters: FoundPersonSourceAdapter[] = [
+    { name: "venezuelatebusca", search: (sourceSignal) => scrapeVenezuelaTeBusca(true, sourceSignal) },
+    { name: "desaparecidos_terremoto", search: (sourceSignal) => scrapeApiSource("desaparecidos_terremoto", DESAPARECIDOS_API_URL, "https://desaparecidosterremotovenezuela.com/", true, sourceSignal) },
+    { name: "encuentralos", search: (sourceSignal) => scrapeApiSource("encuentralos", ENCUENTRALOS_API_URL, "https://encuentralos.tecnosoft.dev/", true, sourceSignal) },
+    { name: "localizados_venezuela", search: (sourceSignal) => scrapeLocalizadosVenezuelaSource(LOCALIZADOS_VENEZUELA_API_URL, true, sourceSignal) },
+  ];
+
+  const results = await Promise.all(adapters.map((adapter) => adapter.search(signal)));
 
   return {
-    candidates: [...venezuelaTeBusca.candidates, ...desaparecidos.candidates, ...encuentralos.candidates],
-    errors: [...venezuelaTeBusca.errors, ...desaparecidos.errors, ...encuentralos.errors],
+    candidates: results.flatMap((result) => result.candidates),
+    errors: results.flatMap((result) => result.errors),
   };
 }

@@ -5,27 +5,8 @@ import { extractFoundPerson, looksLikePersonName } from "./extract-person.js";
 import { searchConsolidatedCandidates } from "./consolidated-source.js";
 import { extractDocumentId, sanitizeRelevantInfo } from "./sanitize.js";
 import { searchKnownFoundPersonSources } from "./known-sources.js";
-import type { FoundPersonCandidate } from "./types.js";
-
-export type SearchCandidateInput = FoundPersonCandidate & {
-  sourceHash: string;
-  raw?: Record<string, unknown>;
-};
-
-export type RejectedSearchCandidate = {
-  provider: "socialcrawl";
-  query: string;
-  reason: string;
-  url: string | null;
-  title: string | null;
-  text: string | null;
-};
-
-export type SearchProviderResult = {
-  candidates: SearchCandidateInput[];
-  errors: string[];
-  rejected?: RejectedSearchCandidate[];
-};
+import { runIngestionSources } from "./source-adapter.js";
+import type { IngestionSource, RejectedSearchCandidate, SearchCandidateInput, SearchProviderResult } from "./types.js";
 
 type SocialCrawlEnvelope = {
   success?: boolean;
@@ -236,24 +217,22 @@ async function searchSocialCrawl(queryLimit: number, signal?: AbortSignal): Prom
 export async function searchFoundPersonCandidates(queryLimit = 1): Promise<SearchProviderResult> {
   const providerTimeoutMs = configuredPositiveInt("FOUND_PEOPLE_PROVIDER_TIMEOUT_MS", DEFAULT_PROVIDER_TIMEOUT_MS);
   const socialSearchEnabled = isSocialCrawlIngestEnabled();
-  const [social, consolidated, knownSources] = await Promise.all([
-    socialSearchEnabled
-      ? searchProvider("socialcrawl", (signal) => searchSocialCrawl(queryLimit, signal), providerTimeoutMs)
-      : skippedProvider("socialcrawl", "FOUND_PEOPLE_SOCIALCRAWL_ENABLED is not true"),
-    searchProvider("github_ocr_consolidated_csv", (signal) => searchConsolidatedCandidates(signal), providerTimeoutMs),
-    searchProvider("known_found_person_sources", (signal) => searchKnownFoundPersonSources(signal), providerTimeoutMs),
-  ]);
+  const sources: IngestionSource[] = [
+    {
+      name: "socialcrawl",
+      enabled: socialSearchEnabled,
+      disabledReason: "FOUND_PEOPLE_SOCIALCRAWL_ENABLED is not true",
+      search: (signal) => searchSocialCrawl(queryLimit, signal),
+    },
+    { name: "github_ocr_consolidated_csv", search: (signal) => searchConsolidatedCandidates(signal) },
+    { name: "known_found_person_sources", search: (signal) => searchKnownFoundPersonSources(signal) },
+  ];
 
-  const byHash = new Map<string, SearchCandidateInput>();
-  for (const candidate of [...social.candidates, ...consolidated.candidates, ...knownSources.candidates]) {
-    byHash.set(candidate.sourceHash, candidate);
-  }
-
-  return {
-    candidates: [...byHash.values()],
-    errors: [...social.errors, ...consolidated.errors, ...knownSources.errors],
-    rejected: social.rejected ?? [],
-  };
+  return runIngestionSources(
+    sources,
+    (name, search) => searchProvider(name, search, providerTimeoutMs),
+    skippedProvider,
+  );
 }
 
 function skippedProvider(provider: string, reason: string): SearchProviderResult {

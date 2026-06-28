@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { normalizeDocumentId, sanitizeRelevantInfo } from "./sanitize.js";
-import type { RejectedSearchCandidate, SearchCandidateInput, SearchProviderResult } from "./search-provider.js";
+import type { RejectedSearchCandidate, SearchCandidateInput, SearchProviderResult } from "./types.js";
 
 export const DEFAULT_OUTPUT_DIR = "artifacts/found-people-ingest";
 export const DEFAULT_DB_BATCH_SIZE = 500;

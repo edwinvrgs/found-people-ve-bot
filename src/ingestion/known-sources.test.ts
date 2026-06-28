@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
-import { parseVenezuelaTeBuscaPage, scrapeApiSource, searchKnownFoundPersonSources, shouldStopApiPagination } from "./known-sources.js";
+import { localizadosVenezuelaPersonToCandidate, parseVenezuelaTeBuscaPage, scrapeApiSource, scrapeLocalizadosVenezuelaSource, searchKnownFoundPersonSources, shouldStopApiPagination } from "./known-sources.js";
 
 const originalFetch = globalThis.fetch;
 
@@ -18,6 +18,9 @@ describe("Known found-person source ingestion", () => {
       if (url.includes("venezuelatebusca.com")) {
         return new Response("<html><body>Registrar persona</body></html>", { status: 200, headers: { "content-type": "text/html" } });
       }
+      if (url.includes("localizadosvenezuela.com")) {
+        return new Response(JSON.stringify({ data: [], meta: { page: 1, totalPages: 0 } }), { status: 200, headers: { "content-type": "application/json" } });
+      }
       return new Response(JSON.stringify({ items: [], total: 0 }), { status: 200, headers: { "content-type": "application/json" } });
     }) as typeof fetch;
 
@@ -28,10 +31,63 @@ describe("Known found-person source ingestion", () => {
       "venezuelatebusca.com",
       "desaparecidos-terremoto-api.theempire.tech",
       "encuentralos.tecnosoft.dev",
+      "localizadosvenezuela.com",
     ]));
     assert.equal(requestedUrls.some((url) => url.includes("venezuelatebusca.com")), true);
     assert.equal(requestedUrls.some((url) => url.includes("desaparecidos-terremoto-api.theempire.tech")), true);
     assert.equal(requestedUrls.some((url) => url.includes("encuentralos.tecnosoft.dev")), true);
+    assert.equal(requestedUrls.some((url) => url.includes("localizadosvenezuela.com/api/v1/localizados")), true);
+  });
+});
+
+describe("Localizados Venezuela ingestion", () => {
+  it("maps the public Localizados Venezuela API shape into a found-person candidate", () => {
+    const candidate = localizadosVenezuelaPersonToCandidate({
+      slug: "albimar-gonzalez-l8abun",
+      nombreCompleto: "Albimar González",
+      observaciones: "Transcrito como Al Bimar González",
+      condicion: "desconocido",
+      lugarNombre: "Alcaldía de Chacao",
+      fuente: {
+        tipo: "ocr",
+        nombre: "reporte_rescatados_chacao.md",
+        url: "https://x.com/Chacao/status/2070206909131415803",
+        fecha: "2026-06-25",
+      },
+      publicadoEn: "2026-06-26T13:20:12.212Z",
+    });
+
+    assert.equal(candidate?.fullName, "Albimar González");
+    assert.equal(candidate?.sourceUrl, "https://localizadosvenezuela.com/localizados/albimar-gonzalez-l8abun");
+    assert.equal(candidate?.raw?.provider, "localizados_venezuela");
+    assert.match(candidate?.relevantInfo ?? "", /Localizados Venezuela/u);
+    assert.match(candidate?.sourceHash ?? "", /^[a-f0-9]{64}$/u);
+  });
+
+  it("uses Localizados Venezuela page/limit pagination and stops at totalPages", async () => {
+    const requestedUrls: string[] = [];
+
+    globalThis.fetch = (async (input: Parameters<typeof fetch>[0]) => {
+      requestedUrls.push(String(input));
+      const page = Number(new URL(String(input)).searchParams.get("page"));
+      return new Response(JSON.stringify({
+        data: Array.from({ length: page === 1 ? 100 : 1 }, (_, index) => ({
+          slug: `persona-${page}-${index}`,
+          nombreCompleto: "Persona Localizada",
+          lugarNombre: "Hospital Central",
+        })),
+        meta: { page, totalPages: 2 },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    const result = await scrapeLocalizadosVenezuelaSource("https://localizadosvenezuela.com/api/v1/localizados", true);
+
+    assert.equal(requestedUrls.length, 2);
+    assert.equal(new URL(requestedUrls[0]).searchParams.get("limit"), "100");
+    assert.equal(new URL(requestedUrls[0]).searchParams.get("page"), "1");
+    assert.equal(new URL(requestedUrls[1]).searchParams.get("page"), "2");
+    assert.equal(result.candidates.length, 101);
+    assert.deepEqual(result.errors, []);
   });
 });
 
