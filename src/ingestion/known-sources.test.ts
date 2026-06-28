@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
-import { busquedaVzlaReportToCandidate, desaparecidosVenezuelaPersonToCandidate, parseVenezuelaTeBuscaPage, scrapeApiSource, scrapeBusquedaVzlaSource, scrapeDesaparecidosVenezuelaSource, scrapeSosVenezuelaSource, searchKnownFoundPersonSources, shouldStopApiPagination, sosVenezuelaPersonToCandidate } from "./known-sources.js";
+import { desaparecidosVenezuelaPersonToCandidate, parseVenezuelaTeBuscaPage, scrapeApiSource, scrapeDesaparecidosVenezuelaSource, scrapeSosVenezuelaSource, searchKnownFoundPersonSources, shouldStopApiPagination, sosVenezuelaPersonToCandidate } from "./known-sources.js";
 
 const originalFetch = globalThis.fetch;
 
@@ -24,9 +24,6 @@ describe("Known found-person source ingestion", () => {
       if (url.includes("sosvenezuela2026.com")) {
         return new Response(JSON.stringify([]), { status: 200, headers: { "content-type": "application/json" } });
       }
-      if (url.includes("busquedavzla.netlify.app")) {
-        return new Response(JSON.stringify([]), { status: 200, headers: { "content-type": "application/json" } });
-      }
       return new Response(JSON.stringify({ items: [], total: 0 }), { status: 200, headers: { "content-type": "application/json" } });
     }) as typeof fetch;
 
@@ -39,61 +36,12 @@ describe("Known found-person source ingestion", () => {
       "encuentralos.tecnosoft.dev",
       "www.desaparecidosvenezuela.com",
       "sosvenezuela2026.com",
-      "busquedavzla.netlify.app",
     ]));
     assert.equal(requestedUrls.some((url) => url.includes("venezuelatebusca.com")), true);
     assert.equal(requestedUrls.some((url) => url.includes("desaparecidos-terremoto-api.theempire.tech")), true);
     assert.equal(requestedUrls.some((url) => url.includes("encuentralos.tecnosoft.dev")), true);
     assert.equal(requestedUrls.some((url) => url.includes("desaparecidosvenezuela.com/api/personas")), true);
     assert.equal(requestedUrls.some((url) => url.includes("sosvenezuela2026.com/api/persons/list")), true);
-    assert.equal(requestedUrls.some((url) => url.includes("busquedavzla.netlify.app/api/reports")), true);
-  });
-});
-
-describe("Busqueda VZLA ingestion", () => {
-  it("maps only localized reports and strips photo/reporter payloads", () => {
-    const candidate = busquedaVzlaReportToCandidate({
-      id: "mqx6i0i9-5jx5kcgk",
-      nombre: "Ysmael Peña Pérez",
-      apodo: "Ysmael",
-      edad: "37",
-      estado: "localizada",
-      estadoUb: "Hospital Central",
-      referencia: "La Guaira",
-      visto: "24 de Junio",
-      ts: 1782614252855,
-      foto: "data:image/jpeg;base64,abc",
-      repTel: "04120000000",
-      repEmail: "test@example.com",
-    });
-
-    assert.equal(candidate?.fullName, "Ysmael Peña Pérez");
-    assert.equal(candidate?.sourceUrl, "https://busquedavzla.netlify.app/#report=mqx6i0i9-5jx5kcgk");
-    assert.equal(candidate?.raw?.provider, "busqueda_vzla");
-    assert.equal("foto" in (candidate?.raw ?? {}), false);
-    assert.equal("repTel" in (candidate?.raw ?? {}), false);
-    assert.equal("repEmail" in (candidate?.raw ?? {}), false);
-    assert.match(candidate?.relevantInfo ?? "", /Localizada/u);
-    assert.equal(busquedaVzlaReportToCandidate({ id: "1", nombre: "Persona Buscada", estado: "buscando" }), null);
-    assert.equal(busquedaVzlaReportToCandidate({ id: "2", nombre: "Persona Sin Contacto", estado: "sincontacto" }), null);
-  });
-
-  it("reads the public reports list once and keeps only localized reports", async () => {
-    const requestedUrls: string[] = [];
-
-    globalThis.fetch = (async (input: Parameters<typeof fetch>[0]) => {
-      requestedUrls.push(String(input));
-      return new Response(JSON.stringify([
-        { id: "found", nombre: "Persona Localizada", estado: "localizada" },
-        { id: "missing", nombre: "Persona Buscada", estado: "buscando" },
-      ]), { status: 200, headers: { "content-type": "application/json" } });
-    }) as typeof fetch;
-
-    const result = await scrapeBusquedaVzlaSource("https://busquedavzla.netlify.app/api/reports", true);
-
-    assert.deepEqual(requestedUrls, ["https://busquedavzla.netlify.app/api/reports"]);
-    assert.equal(result.candidates.length, 1);
-    assert.deepEqual(result.errors, []);
   });
 });
 

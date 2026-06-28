@@ -9,8 +9,6 @@ const DESAPARECIDOS_VENEZUELA_API_URL = "https://www.desaparecidosvenezuela.com/
 const DESAPARECIDOS_VENEZUELA_PUBLIC_URL = "https://www.desaparecidosvenezuela.com/";
 const SOS_VENEZUELA_API_URL = "https://sosvenezuela2026.com/api/persons/list";
 const SOS_VENEZUELA_PUBLIC_URL = "https://sosvenezuela2026.com/";
-const BUSQUEDA_VZLA_API_URL = "https://busquedavzla.netlify.app/api/reports";
-const BUSQUEDA_VZLA_PUBLIC_URL = "https://busquedavzla.netlify.app/";
 
 const VENEZUELA_TE_BUSCA_PAGE_LIMIT = 250;
 const API_PAGE_LIMIT = 250;
@@ -68,23 +66,7 @@ type SosVenezuelaPerson = {
   source_date?: unknown;
 };
 
-type BusquedaVzlaReport = {
-  id?: unknown;
-  nombre?: unknown;
-  apodo?: unknown;
-  edad?: unknown;
-  estado?: unknown;
-  estadoUb?: unknown;
-  referencia?: unknown;
-  visto?: unknown;
-  ts?: unknown;
-  foto?: unknown;
-  repTel?: unknown;
-  repEmail?: unknown;
-  repNombre?: unknown;
-};
-
-type SourceName = "venezuelatebusca" | "desaparecidos_terremoto" | "encuentralos" | "desaparecidos_venezuela" | "sos_venezuela_2026" | "busqueda_vzla";
+type SourceName = "venezuelatebusca" | "desaparecidos_terremoto" | "encuentralos" | "desaparecidos_venezuela" | "sos_venezuela_2026";
 
 type FoundPersonSourceAdapter = {
   name: SourceName;
@@ -316,32 +298,6 @@ export function sosVenezuelaPersonToCandidate(person: SosVenezuelaPerson) {
   );
 }
 
-export function busquedaVzlaReportToCandidate(report: BusquedaVzlaReport) {
-  const id = asString(report.id);
-  const fullName = asString(report.nombre);
-  const estado = asString(report.estado).toLocaleLowerCase("es-VE");
-  if (!id || !fullName || estado !== "localizada") return null;
-
-  const fields = [
-    "Localizada",
-    asString(report.apodo) ? `apodo: ${asString(report.apodo)}` : "",
-    asString(report.edad) ? `edad: ${asString(report.edad)}` : "",
-    asString(report.estadoUb) ? `ubicación: ${asString(report.estadoUb)}` : "",
-    asString(report.referencia) ? `referencia: ${asString(report.referencia)}` : "",
-    asString(report.visto) ? `vista: ${asString(report.visto)}` : "",
-    asString(report.ts) ? `fecha: ${asString(report.ts)}` : "",
-  ].filter(Boolean).join(" · ");
-
-  return candidate(
-    "busqueda_vzla",
-    id,
-    fullName,
-    `Busqueda VZLA · ${fields}`,
-    `${BUSQUEDA_VZLA_PUBLIC_URL}#report=${encodeURIComponent(id)}`,
-    { id, estado, ts: report.ts ?? null },
-  );
-}
-
 export function shouldStopApiPagination(status: number) {
   return status === 401 || status === 403 || status === 429;
 }
@@ -493,25 +449,6 @@ export async function scrapeSosVenezuelaSource(apiUrl: string, enabled: boolean,
   return { candidates, errors };
 }
 
-export async function scrapeBusquedaVzlaSource(apiUrl: string, enabled: boolean, signal?: AbortSignal) {
-  if (!enabled) return { candidates: [], errors: [] };
-
-  try {
-    const response = await fetch(apiUrl, { headers: { Accept: "application/json" }, signal });
-    if (!response.ok) return { candidates: [], errors: [`busqueda_vzla: ${response.status}`] };
-
-    const body = (await response.json().catch(() => [])) as unknown;
-    const items = Array.isArray(body) ? body : [];
-    const candidates = items
-      .map((report) => busquedaVzlaReportToCandidate(report as BusquedaVzlaReport))
-      .filter((item) => item !== null);
-    return { candidates, errors: [] };
-  } catch (error) {
-    if (isAbortError(error, signal)) throw error;
-    return { candidates: [], errors: [`busqueda_vzla: ${error instanceof Error ? error.message : "unknown error"}`] };
-  }
-}
-
 function apiPageDelayMs(source: Extract<SourceName, "desaparecidos_terremoto" | "encuentralos">) {
   return source === "encuentralos" ? 0 : SLOW_API_PAGE_DELAY_MS;
 }
@@ -523,7 +460,6 @@ export async function searchKnownFoundPersonSources(signal?: AbortSignal): Promi
     { name: "encuentralos", search: (sourceSignal) => scrapeApiSource("encuentralos", ENCUENTRALOS_API_URL, "https://encuentralos.tecnosoft.dev/", true, sourceSignal) },
     { name: "desaparecidos_venezuela", search: (sourceSignal) => scrapeDesaparecidosVenezuelaSource(DESAPARECIDOS_VENEZUELA_API_URL, true, sourceSignal) },
     { name: "sos_venezuela_2026", search: (sourceSignal) => scrapeSosVenezuelaSource(SOS_VENEZUELA_API_URL, true, sourceSignal) },
-    { name: "busqueda_vzla", search: (sourceSignal) => scrapeBusquedaVzlaSource(BUSQUEDA_VZLA_API_URL, true, sourceSignal) },
   ];
 
   const results = await Promise.all(adapters.map((adapter) => adapter.search(signal)));
